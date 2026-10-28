@@ -3514,6 +3514,203 @@ CHANGELOG.unshift({v:"2.7",t:"Effects & diamond drops",d:"Oct 27, 2026",items:[
 render();subDrops();
 })();
 /* =================== end of YAPPER v2.7 ADD-ON =================== */
+/* ===================================================================
+   YAPPER v2.8 ADD-ON: online status (Online / Idle / Do Not Disturb /
+   Invisible), auto-idle, custom status, status dots everywhere
+   =================================================================== */
+(function yapperV28(){
+var STS={online:{n:"Online",d:"",c:"#23a55a"},idle:{n:"Idle",d:"Set automatically after 5 minutes away",c:"#f0b232"},dnd:{n:"Do Not Disturb",d:"Mutes pop-up notifications",c:"#f23f43"},invisible:{n:"Invisible",d:"You’ll look offline, but can still chat",c:"#80848e"}};
+var IDLE_AFTER=5*60000;
+var ST={s:"online",cs:"",idle:false};
+function stKey(){return "yapper:status:"+(username||"");}
+function loadSt(){ST={s:"online",cs:"",idle:false};try{var d=JSON.parse(localStorage.getItem(stKey())||"null");if(d){if(STS[d.s])ST.s=d.s;ST.cs=String(d.cs||"").slice(0,60);}}catch(e){}}
+function saveSt(){try{localStorage.setItem(stKey(),JSON.stringify({s:ST.s,cs:ST.cs}));}catch(e){}}
+function okSt(s){return s==="idle"||s==="dnd"?s:"online";}
+function effSt(){return ST.s==="online"&&ST.idle?"idle":ST.s;}
+function okCs(x){return String(x||"").replace(/[\u0000-\u001f]/g,"").slice(0,60);}
+loadSt();
+
+/* ---------- styles ---------- */
+var css=document.createElement("style");css.id="yapper-v28";
+css.textContent=[
+".dot.st-online,.sdot.st-online{background:#23a55a}",
+".dot.st-idle,.sdot.st-idle{background:radial-gradient(circle at 28% 28%,#10102a 34%,transparent 36%),#f0b232;box-shadow:none;animation:none}",
+".dot.st-dnd,.sdot.st-dnd{background:linear-gradient(#fff,#fff) center/56% 24% no-repeat,#f23f43;box-shadow:none;animation:none}",
+".dot.st-invisible,.dot.st-offline,.sdot.st-invisible,.sdot.st-offline{background:radial-gradient(circle,#10102a 36%,#80848e 39%);box-shadow:none;animation:none}",
+".av{position:relative}",
+".sdot{position:absolute;right:-3px;bottom:-3px;width:13px;height:13px;border-radius:50%;border:2.5px solid #0e111b;box-sizing:border-box;pointer-events:none}",
+".ust{cursor:pointer;display:flex;align-items:center;gap:5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ust:hover{text-decoration:underline}",
+".ustdot{width:9px;height:9px;border-radius:50%;flex-shrink:0;border:0;position:static}",
+"#uav{cursor:pointer}",
+"#stmenu{position:fixed;display:none;z-index:46;width:min(270px,92vw);box-sizing:border-box;background:rgba(18,14,40,.98);border:1px solid var(--border);border-radius:16px;box-shadow:0 14px 50px rgba(0,0,0,.55);padding:8px}#stmenu.on{display:block}",
+".strow{display:flex;gap:11px;align-items:center;width:100%;box-sizing:border-box;padding:9px 10px;border:0;border-radius:10px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer}.strow:hover{background:var(--hover)}.strow.on{background:color-mix(in srgb,var(--a1) 22%,transparent)}",
+".strow .sd{position:static;width:13px;height:13px;border-radius:50%;border:0;flex-shrink:0}.strow b{display:block;font-size:13.5px}.strow .sx{display:block;font-size:11.5px;color:var(--mute)}",
+".stsep{height:1px;background:var(--border);margin:6px 4px}",
+".stcs{display:flex;gap:6px;padding:4px}.stcs input{flex:1;min-width:0;box-sizing:border-box;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.07);color:var(--text);font:inherit;font-size:14px;outline:none}.stcs input:focus{border-color:var(--a2)}",
+".stcs button{border:0;border-radius:10px;padding:0 10px;background:var(--hover);color:var(--text);cursor:pointer;font:inherit;font-size:13px}",
+".stlbl{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--mute);margin:6px 8px 4px}",
+".pcs{font-size:13px;color:var(--text);margin-top:4px}"
+].join("\n");
+document.head.appendChild(css);
+
+/* ---------- who is what ---------- */
+function peerOf(u){var p=null;Object.keys(peers).some(function(k){if(peers[k].u===u){p=peers[k];return true;}return false;});return p;}
+function stOf(u){if(u==="YapperBot")return "online";if(u===username)return effSt();var p=peerOf(u);return p?okSt(p.st):"offline";}
+function csOf(u){if(u===username)return ST.cs;var p=peerOf(u);return p?okCs(p.cs):"";}
+function stLabel(s){return s==="offline"?"Offline":STS[s].n;}
+function setDot(dot,s){if(!dot)return;dot.classList.remove("off","st-online","st-idle","st-dnd","st-invisible","st-offline");dot.classList.add("st-"+s);}
+
+/* ---------- send my status ---------- */
+announce=function(t){
+  if(!username)return;
+  if(ST.s==="invisible"){if(Cloud.client&&Cloud.presence)cloudTrack();return;}
+  if(bc)bc.postMessage({t:t||"hb",id:tabId,u:username,v:verified,b:myBio,avatar:myAvatar,dc:myDeco,tg:myTag,vc:(VC.on&&!VC.joining)?VC.key:"",vm:(VC.muted||VC.deaf||VC.nomic)?1:0,vd:VC.deaf?1:0,st:effSt(),cs:ST.cs});
+  if(Cloud.client&&Cloud.presence)cloudTrack();
+};
+cloudTrack=function(){
+  if(!Cloud.presence||!username)return;
+  if(ST.s==="invisible"){try{Cloud.presence.untrack();}catch(e){}return;}
+  Cloud.presence.track({u:username,v:!!verified,b:myBio||"",avatar:myAvatar||"",dc:myDeco||"",tg:myTag||null,tab:tabId,at:Date.now(),st:effSt(),cs:ST.cs}).catch(function(e){console.warn("Presence sync failed",e);});
+  cloudPublishProfile(false);
+};
+
+/* ---------- receive other people's status ---------- */
+var _cpr=cloudPresenceRefresh;
+cloudPresenceRefresh=function(){
+  _cpr();if(!Cloud.presence)return;
+  var state=Cloud.presence.presenceState(),ch=false;
+  Object.keys(state).forEach(function(key){(state[key]||[]).forEach(function(p){var id="cloud:"+(p&&p.tab||key),pr=peers[id];if(pr){var s=okSt(p.st),c=okCs(p.cs);if(pr.st!==s||pr.cs!==c){pr.st=s;pr.cs=c;ch=true;}}});});
+  if(ch)refreshAll();
+};
+if(bc){
+  var _bcm=bc.onmessage;
+  bc.onmessage=function(e){
+    _bcm.call(bc,e);var d=e.data,pr=d&&typeof d.id==="string"&&peers[d.id];
+    if(pr&&d.u){var s=okSt(d.st),c=okCs(d.cs);if(pr.st!==s||pr.cs!==c){pr.st=s;pr.cs=c;refreshAll();}}
+  };
+}
+
+/* ---------- showing status ---------- */
+function refreshDots(){Array.prototype.forEach.call(msgs.querySelectorAll(".sdot[data-u]"),function(d){setDot(d,stOf(d.getAttribute("data-u")));});}
+function refreshAll(){renderMembers();refreshDots();renderChip();if(dmMode)renderNav();}
+var _render=render;
+render=function(){
+  _render();
+  var arr=chans()[cur]||[],els=msgs.children;
+  for(var i=0;i<els.length&&i<arr.length;i++){
+    var av=els[i].querySelector(".av"),u=arr[i].bot?"YapperBot":arr[i].user;if(!av||av.querySelector(".sdot"))continue;
+    var d=pEl("i","sdot");d.setAttribute("data-u",u);setDot(d,stOf(u));av.appendChild(d);
+  }
+};
+var _renderMembers=renderMembers;
+renderMembers=function(){
+  _renderMembers();if(dmMode)return;
+  Array.prototype.forEach.call(document.querySelectorAll("#members .mem:not(.offline)"),function(r){
+    var n=r.querySelector(".mn");if(!n)return;var u=n.textContent.split(" ")[0];if(!u||u==="YapperBot")return;
+    var s=stOf(u),c=csOf(u);setDot(r.querySelector(".mav .dot"),s);
+    var sub=r.querySelector(".mstatus");if(sub)sub.textContent=c||(u===username?(s==="invisible"?"Invisible · only you see this":stLabel(s)+" · Your account"):stLabel(s));
+  });
+};
+var _renderDM=renderDM;
+renderDM=function(){
+  var r=_renderDM();
+  Array.prototype.forEach.call(document.querySelectorAll("#chlist .dmi"),function(row){
+    var nm=row.querySelector(".dmn"),u=nm&&nm.firstChild?nm.firstChild.nodeValue:"";if(!u)return;
+    var s=stOf(u);setDot(row.querySelector(".mav .dot"),s);
+    var c=csOf(u),sub=row.querySelector(".dms");if(sub&&c&&s!=="offline")sub.textContent=c;
+  });
+  return r;
+};
+var _rdp=renderDMProfile;
+renderDMProfile=function(el){
+  _rdp(el);var s=stOf(cur);setDot(el.querySelector(".dmpav .dot"),s);
+  var c=csOf(cur);if(c&&s!=="offline"){var u=el.querySelector(".dmpu");if(u)u.insertAdjacentElement("afterend",pEl("div","pcs","💬 "+c));}
+};
+var _showProfile=showProfile;
+showProfile=function(m){
+  _showProfile(m);if(!m)return;
+  var c=document.getElementById("pcard"),s=m.bot?"online":stOf(m.u);setDot(c.querySelector(".pav .dot"),s);
+  var nm=c.querySelector(".pname"),line=nm&&nm.nextElementSibling;
+  if(line&&/^●/.test(line.textContent)){line.textContent="● "+(m.bot?"Online":stLabel(s));line.style.color=s==="offline"||s==="invisible"?"#80848e":STS[s].c;}
+  var cs=m.bot?"":csOf(m.u);if(cs&&line)line.insertAdjacentElement("afterend",pEl("div","pcs","💬 "+cs));
+};
+var _renderChip=renderChip;
+renderChip=function(){
+  _renderChip();var st=document.querySelector(".ust");if(!st)return;
+  var s=effSt(),inVc=VC&&VC.on;st.innerHTML="";st.style.color=STS[s].c;
+  var d=pEl("i","ustdot");d.style.background=STS[s].c;st.appendChild(d);
+  st.appendChild(document.createTextNode(inVc?"In voice":(ST.cs||STS[s].n)));
+  st.title="Set your status";
+};
+
+/* ---------- status menu ---------- */
+var menu=pEl("div","");menu.id="stmenu";document.body.appendChild(menu);
+function setStatus(s){ST.s=s;ST.idle=false;saveSt();if(s==="invisible"&&bc)bc.postMessage({t:"bye",id:tabId});announce();refreshAll();toast(STS[s].n==="Online"?"🟢 You’re online.":s==="idle"?"🌙 You’re now Idle.":s==="dnd"?"⛔ Do Not Disturb is on. Pop-ups are muted.":"⚫ You’re invisible. People will see you as offline.");}
+function openMenu(anchor){
+  if(!username){openModal();return;}
+  menu.innerHTML="";menu.appendChild(pEl("div","stlbl","SET YOUR STATUS"));
+  ["online","idle","dnd","invisible"].forEach(function(k){
+    var b=pEl("button","strow"+(ST.s===k?" on":"")),d=pEl("i","sd dot st-"+k);b.type="button";b.appendChild(d);
+    var t=pEl("span","");t.appendChild(pEl("b","",STS[k].n));if(STS[k].d)t.appendChild(pEl("span","sx",STS[k].d));b.appendChild(t);
+    b.onclick=function(){closeMenu();setStatus(k);};menu.appendChild(b);
+  });
+  menu.appendChild(pEl("div","stsep"));menu.appendChild(pEl("div","stlbl","CUSTOM STATUS"));
+  var row=pEl("div","stcs"),inpt=document.createElement("input");inpt.maxLength=60;inpt.placeholder="🎮 gaming, 📚 studying…";inpt.value=ST.cs;
+  var save=function(){ST.cs=okCs(inpt.value.trim());saveSt();announce();refreshAll();closeMenu();toast(ST.cs?"💬 Status set: "+ST.cs:"Custom status cleared.");};
+  inpt.onkeydown=function(e){if(e.key==="Enter")save();if(e.key==="Escape")closeMenu();};
+  var sv=pEl("button","","Save");sv.type="button";sv.onclick=save;row.appendChild(inpt);row.appendChild(sv);
+  if(ST.cs){var cl=pEl("button","","✕");cl.type="button";cl.title="Clear";cl.onclick=function(){inpt.value="";save();};row.appendChild(cl);}
+  menu.appendChild(row);
+  menu.classList.add("on");
+  var r=anchor.getBoundingClientRect(),w=menu.offsetWidth,h=menu.offsetHeight;
+  menu.style.left=Math.max(8,Math.min(r.left,innerWidth-w-8))+"px";
+  var top=r.top-h-8;if(top<8)top=Math.min(r.bottom+8,innerHeight-h-8);menu.style.top=Math.max(8,top)+"px";
+}
+function closeMenu(){menu.classList.remove("on");}
+document.addEventListener("pointerdown",function(e){if(menu.classList.contains("on")&&!menu.contains(e.target)&&!e.target.closest(".ust,#uav"))closeMenu();});
+document.addEventListener("keydown",function(e){if(e.key==="Escape")closeMenu();});
+document.getElementById("uchip").addEventListener("click",function(e){var t=e.target.closest(".ust,#uav");if(t){e.stopPropagation();if(menu.classList.contains("on"))closeMenu();else openMenu(document.getElementById("uchip"));}});
+
+/* ---------- auto idle ---------- */
+var lastAct=Date.now();
+function active(){lastAct=Date.now();if(ST.idle){ST.idle=false;announce();refreshAll();}}
+["pointerdown","keydown","touchstart"].forEach(function(ev){document.addEventListener(ev,active,{passive:true});});
+document.addEventListener("visibilitychange",function(){if(!document.hidden)active();});
+setInterval(function(){if(ST.s==="online"&&!ST.idle&&Date.now()-lastAct>IDLE_AFTER){ST.idle=true;announce();refreshAll();}},20000);
+
+/* ---------- Do Not Disturb mutes pop-ups ---------- */
+var _toast=toast;
+toast=function(text,acts){if(effSt()==="dnd"&&/friend request|diamond drop just landed|Quest complete|updated to v|accepted your friend/i.test(String(text)))return;return _toast(text,acts);};
+
+/* ---------- username changes reload the saved status ---------- */
+var _setName=setName;
+setName=function(n,isNew){_setName(n,isNew);loadSt();announce();refreshAll();};
+
+/* ---------- /status command ---------- */
+var _command=command;
+command=function(ch,line){
+  var p=line.slice(1).split(" "),c=p[0].toLowerCase();
+  if(c==="status"){
+    var want=(p[1]||"").toLowerCase(),map={online:"online",idle:"idle",away:"idle",dnd:"dnd",busy:"dnd",invisible:"invisible",offline:"invisible"};
+    if(map[want]){setStatus(map[want]);return;}
+    if(want){ST.cs=okCs(p.slice(1).join(" "));saveSt();announce();refreshAll();bot(ch,"💬 Custom status set: "+ST.cs);return;}
+    bot(ch,"Your status: "+STS[effSt()].n+(ST.cs?" · "+ST.cs:"")+"\nUse /status online, idle, dnd or invisible, or /status <anything> for a custom status. You can also tap your name in the bottom-left.");return;
+  }
+  return _command(ch,line);
+};
+
+/* ---------- release notes ---------- */
+APP_VER="2.8";
+CHANGELOG.unshift({v:"2.8",t:"Online status",d:"Oct 27, 2026",items:[
+  ["new","Set your status: Online, Idle, Do Not Disturb or Invisible. Tap your name in the bottom-left"],
+  ["new","Custom status like 🎮 gaming, shown in the member list, DMs and your profile"],
+  ["new","Status dots on avatars in chat, DMs, profiles and the member list"],
+  ["imp","You go Idle automatically after 5 minutes away, and Do Not Disturb mutes pop-ups"]]});
+
+/* ---------- start ---------- */
+announce();refreshAll();render();
+})();
+/* =================== end of YAPPER v2.8 ADD-ON =================== */
 })();
 </script>
 
