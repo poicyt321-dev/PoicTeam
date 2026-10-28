@@ -3570,7 +3570,7 @@ announce=function(t){
 cloudTrack=function(){
   if(!Cloud.presence||!username)return;
   if(ST.s==="invisible"){try{Cloud.presence.untrack();}catch(e){}return;}
-  Cloud.presence.track({u:username,v:!!verified,b:myBio||"",avatar:myAvatar||"",dc:myDeco||"",tg:myTag||null,tab:tabId,at:Date.now(),st:effSt(),cs:ST.cs}).catch(function(e){console.warn("Presence sync failed",e);});
+  Cloud.presence.track({u:username,v:!!verified,b:myBio||"",avatar:myAvatar||"",dc:myDeco||"",tg:myTag||null,tab:tabId,at:Date.now(),st:effSt(),cs:ST.cs,vc:(VC.on&&!VC.joining)?VC.key:"",vm:(VC.muted||VC.deaf||VC.nomic)?1:0,vd:VC.deaf?1:0}).catch(function(e){console.warn("Presence sync failed",e);});
   cloudPublishProfile(false);
 };
 
@@ -3579,8 +3579,8 @@ var _cpr=cloudPresenceRefresh;
 cloudPresenceRefresh=function(){
   _cpr();if(!Cloud.presence)return;
   var state=Cloud.presence.presenceState(),ch=false;
-  Object.keys(state).forEach(function(key){(state[key]||[]).forEach(function(p){var id="cloud:"+(p&&p.tab||key),pr=peers[id];if(pr){var s=okSt(p.st),c=okCs(p.cs);if(pr.st!==s||pr.cs!==c){pr.st=s;pr.cs=c;ch=true;}}});});
-  if(ch)refreshAll();
+  Object.keys(state).forEach(function(key){(state[key]||[]).forEach(function(p){var id="cloud:"+(p&&p.tab||key),pr=peers[id];if(pr){var s=okSt(p.st),c=okCs(p.cs);if(pr.st!==s||pr.cs!==c){pr.st=s;pr.cs=c;ch=true;}var v=typeof p.vc==="string"?p.vc.slice(0,80):"",vm=!!p.vm,vd=!!p.vd;if(pr.vc!==v||pr.vm!==vm||pr.vd!==vd){pr.vc=v;pr.vm=vm;pr.vd=vd;ch=true;}}});});
+  if(ch){refreshAll();vcSync();vcRefresh();}
 };
 if(bc){
   var _bcm=bc.onmessage;
@@ -3711,6 +3711,122 @@ CHANGELOG.unshift({v:"2.8",t:"Online status",d:"Oct 27, 2026",items:[
 announce();refreshAll();render();
 })();
 /* =================== end of YAPPER v2.8 ADD-ON =================== */
+/* ===================================================================
+   YAPPER v2.9 ADD-ON: voice works across devices + see who's in voice
+   =================================================================== */
+(function yapperV29(){
+var css=document.createElement("style");css.id="yapper-v29";
+css.textContent=[
+".vcin{display:inline-flex;align-items:center;gap:4px;color:#3ba55d!important;font-weight:600;cursor:pointer}.vcin:hover{text-decoration:underline}",
+".mem.invc .mav{box-shadow:0 0 0 2px #3ba55d,0 0 12px rgba(59,165,93,.55)}",
+".pvc{display:flex;align-items:center;gap:8px;margin-top:10px;padding:9px 12px;border-radius:12px;background:rgba(59,165,93,.12);border:1px solid rgba(59,165,93,.45);font-size:13.5px}",
+".pvc b{color:#3ba55d}.pvc .fbtn{margin-left:auto}"
+].join("\n");
+document.head.appendChild(css);
+
+/* ---------- voice signaling through the shared database ---------- */
+NET_TYPES.rtc=1;
+var _rtcSend=rtcSend;
+rtcSend=function(to,k,data){
+  if(/^cloud:/.test(to)){
+    if(Cloud.social){try{Cloud.social.send({type:"broadcast",event:"net",payload:{t:"rtc",id:"cloud:"+tabId,to:to,k:k,data:data}});}catch(e){console.warn("Voice signal failed",e);}}
+    return;
+  }
+  _rtcSend(to,k,data);
+};
+var _netIn=netIn;
+netIn=function(d){
+  if(d&&d.t==="rtc"){
+    if(d.to==="cloud:"+tabId&&typeof d.id==="string"&&/^cloud:/.test(d.id)&&d.id!=="cloud:"+tabId&&peers[d.id])vcSignal({t:"rtc",id:d.id,to:tabId,k:d.k,data:d.data});
+    return;
+  }
+  return _netIn(d);
+};
+/* Connect to everyone in my voice channel. Same-browser tabs use the fast local
+   link; other devices go through the database. Exactly one side starts each call. */
+vcSync=function(){
+  if(!VC.on||VC.joining||!window.RTCPeerConnection)return;
+  Object.keys(peers).forEach(function(pid){
+    var p=peers[pid],raw=pid.replace(/^cloud:/,""),dup=pid!==raw&&!!peers[raw];
+    if(p.vc===VC.key&&!dup){if(!VC.pcs[pid]&&tabId<raw)vcOffer(pid);}
+    else if(VC.pcs[pid])vcDrop(pid);
+  });
+};
+var _vcm=vcMembers;
+vcMembers=function(key){var seen={},out=[];_vcm(key).forEach(function(m){var k=String(m.u).toLowerCase();if(seen[k])return;seen[k]=1;out.push(m);});return out;};
+
+/* ---------- who is in voice ---------- */
+function parseKey(k){var i=String(k||"").lastIndexOf("/");return i>0?{srv:k.slice(0,i),ch:k.slice(i+1),key:k}:null;}
+function vcOf(u){
+  if(u===username)return(VC.on&&!VC.joining)?parseKey(VC.key):null;
+  var v=null;Object.keys(peers).some(function(k){var p=peers[k];if(p.u===u&&p.vc){v=parseKey(p.vc);return true;}return false;});return v;
+}
+function goVoice(v){
+  var si=-1;servers.forEach(function(s,i){if(s.name===v.srv)si=i;});
+  if(si<0||!servers[si].meta[v.ch]){toast("🔊 That voice channel is in "+v.srv+", which you haven’t joined.");return;}
+  closeP();dmMode=false;curS=si;cur=v.ch;renderNav();render();renderMembers();
+  if(typeof closeDrawers==="function")closeDrawers();
+}
+function vcLabel(v){return "🔊 In voice · "+v.ch+(servers[curS]&&servers[curS].name===v.srv&&!dmMode?"":" ("+v.srv+")");}
+var _renderMembers=renderMembers;
+renderMembers=function(){
+  _renderMembers();if(dmMode)return;
+  Array.prototype.forEach.call(document.querySelectorAll("#members .mem:not(.offline)"),function(r){
+    var n=r.querySelector(".mn");if(!n)return;var u=n.textContent.split(" ")[0];if(!u||u==="YapperBot")return;
+    var v=vcOf(u),sub=r.querySelector(".mstatus");if(!v||!sub)return;
+    r.classList.add("invc");sub.textContent="";var s=pEl("span","vcin",vcLabel(v));s.title="Go to this voice channel";
+    s.onclick=function(e){e.stopPropagation();goVoice(v);};sub.appendChild(s);
+  });
+};
+var _renderDM=renderDM;
+renderDM=function(){
+  var r=_renderDM();
+  Array.prototype.forEach.call(document.querySelectorAll("#chlist .dmi"),function(row){
+    var nm=row.querySelector(".dmn"),u=nm&&nm.firstChild?nm.firstChild.nodeValue:"",v=u&&vcOf(u),sub=row.querySelector(".dms");
+    if(v&&sub){sub.textContent="🔊 In voice · "+v.ch;sub.style.color="#3ba55d";}
+  });
+  return r;
+};
+function voiceBox(u){
+  var v=vcOf(u);if(!v)return null;
+  var box=pEl("div","pvc");box.appendChild(pEl("span","","🔊"));
+  var t=pEl("span","");t.appendChild(pEl("b","","In voice"));t.appendChild(document.createTextNode(" · "+v.ch+" ("+v.srv+")"));box.appendChild(t);
+  if(u!==username){var j=pEl("button","fbtn ok","Join");j.type="button";j.onclick=function(){goVoice(v);var s=servers[curS];if(s&&s.name===v.srv&&cur===v.ch&&!(VC.on&&VC.key===v.key)){joinVoice(s,v.ch);renderNav();render();}};box.appendChild(j);}
+  return box;
+}
+var _showProfile=showProfile;
+showProfile=function(m){
+  _showProfile(m);if(!m||m.bot)return;
+  var b=voiceBox(m.u),c=document.getElementById("pcard"),about=c.querySelector(".pbody .psec");
+  if(b&&about)about.parentNode.insertBefore(b,about);
+};
+var _rdp=renderDMProfile;
+renderDMProfile=function(el){
+  _rdp(el);var b=voiceBox(cur),act=el.querySelector(".dmp .pact");
+  if(b&&act)act.parentNode.insertBefore(b,act);
+};
+/* refresh lists when someone joins or leaves voice */
+var lastSig="";
+setInterval(function(){
+  var sig=Object.keys(peers).map(function(k){return peers[k].u+":"+(peers[k].vc||"")+(peers[k].vm?1:0)+(peers[k].vd?1:0);}).sort().join("|")+(VC.on?VC.key:"");
+  if(sig!==lastSig){lastSig=sig;renderMembers();if(dmMode)renderNav();vcSync();}
+},1500);
+
+var _renderNav=renderNav;
+renderNav=function(){
+  _renderNav();if(dmMode)return;var s=servers[curS];
+  Array.prototype.forEach.call(document.querySelectorAll("#chlist .chrow > .ch"),function(b){var n=b.textContent.replace(/^\S+\s/,"");if(s.meta[n]&&s.meta[n].type==="voice")b.textContent="🔊 "+n;});
+};
+/* ---------- release notes ---------- */
+APP_VER="2.9";
+CHANGELOG.unshift({v:"2.9",t:"Voice across devices",d:"Oct 27, 2026",items:[
+  ["fix","Voice chat now connects people on different devices, not just tabs in the same browser"],
+  ["new","See who’s in voice: the member list, DMs and profiles show “🔊 In voice” with a Join button"],
+  ["fix","Voice channels in the sidebar now list people from other devices too"]]});
+
+renderMembers();
+})();
+/* =================== end of YAPPER v2.9 ADD-ON =================== */
 })();
 </script>
 
