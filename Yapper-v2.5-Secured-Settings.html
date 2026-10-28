@@ -733,7 +733,6 @@ function showAccountSetup(){
   var close=pEl("button","btn alt","Back to settings");close.onclick=showSettings;actions.appendChild(close);body.appendChild(actions);c.appendChild(body);document.getElementById("pmodal").classList.add("show");
 }
 function showCloudSetup(){
-  return; // database settings are hidden from users
   var c=document.getElementById("pcard");c.innerHTML="";var body=pEl("div","pbody");body.style.paddingTop="20px";
   var h=pEl("h2","","☁️ Shared online database");h.style.cssText=GRAD;body.appendChild(h);
   body.appendChild(pEl("p","","Connect Yapper to your own Supabase project so messages and online members can sync between separate downloads/devices. You must create the project first and run the included SQL setup script."));
@@ -773,7 +772,7 @@ async function submitName(){
   }
   setName(v,v!==username);
 }
-var verified=false,CODE_HASH="d8c6397f5e271b2ec1dbff14d92acab282c05c332aa6292c6234a86694cfd548";
+var verified=false,CODE_HASH="ec615420d1e6384d1b2823ab43321f453283a9db4ebac288fc6286ed52ffc001";
 try{verified=localStorage.getItem("yapper:verified")==="1";}catch(e){}
 function verify(code){
   if(!code)return bot(cur,"Use /verify followed by your code.");
@@ -906,6 +905,7 @@ function renderDM(){
   inp.disabled=false;inp.placeholder="Message @"+cur;
   updateTyping();
 }
+var GLOBAL_OWNER_CLAIM_CODE="oliserey"; // Replace before publishing; client-side codes are not secure.
 var globalOwner=false;try{globalOwner=localStorage.getItem("yapper:globalOwner")==="1";}catch(e){}
 function isGlobalOwner(){return !!globalOwner;}
 function auditLog(action,details){
@@ -1879,7 +1879,7 @@ function showSettings(){
   body.appendChild(arow("🎨","Theme","Now: "+curTh+" · tap to switch",function(){document.getElementById("thm").click();showSettings();}));
   body.appendChild(arow("🌐","Auto-translate",TR.on?"On · "+LANGS[TR.lang]:"Off",function(){showTranslate();}));
   body.appendChild(pEl("div","mh","COMMUNITY"));
-
+  body.appendChild(arow("☁️","Shared online database",Cloud.client?"Connected · messages sync across devices":"Connecting automatically to shared chat…",function(){showCloudSetup();}));
   body.appendChild(arow("🤝","Friends",SOC.f.length+" friends"+(SOC.i.length?" · "+SOC.i.length+" pending":""),function(){showFriends("all");}));
   body.appendChild(arow("🧩","Quests",claimable()?claimable()+" ready to claim":"Earn 💎 diamonds",function(){showQuests();}));
   body.appendChild(arow("🛍","Shop","💎 "+GEM.bal+" · buy server tags",function(){showShop();}));
@@ -2659,6 +2659,11 @@ function bot(ch,text,poll){
 }
 function command(ch,line){
   var p=line.slice(1).split(" "),c=p[0].toLowerCase(),arg=p.slice(1).join(" ").trim();
+  if(c==="claimowner"){
+    if(!arg)return bot(ch,"Use /claimowner YOUR_BOOTSTRAP_CODE. Replace GLOBAL_OWNER_CLAIM_CODE in the HTML before using this feature.");
+    if(arg!==GLOBAL_OWNER_CLAIM_CODE)return bot(ch,"That global-owner code is invalid.");
+    globalOwner=true;try{localStorage.setItem("yapper:globalOwner","1");}catch(e){};auditLog("global owner claimed","bootstrap code used");renderNav();return bot(ch,"🌍 Global owner enabled on this browser profile. For real security, move this check to a server-side function.");
+  }
   if(c==="reports")return showReports(ch);
   if(c==="resolve-report")return resolveReport(ch,arg.split(/\s+/)[0]||"");
   if(adminCmd(ch,c,arg))return;
@@ -2806,6 +2811,709 @@ document.addEventListener("keydown",function(e){if(e.key==="Escape")document.get
 renderMembers();announce();
 renderNav();render();
 if(username){unameEl.textContent=username+(verified?" ✔":"");}else{openModal();}
+/* ===================================================================
+   YAPPER v2.6 ADD-ON: image uploads, GIF picker, pins, Yapper Boosts
+   -------------------------------------------------------------------
+   HOW TO INSTALL
+   Paste this whole block INSIDE the main <script>, right after this line:
+     if(username){unameEl.textContent=username+(verified?" ✔":"");}else{openModal();}
+   and BEFORE the line that says:
+     })();
+   Then put your GIPHY key in GIPHY_KEY below and run yapper-v2.6-setup.sql.
+   =================================================================== */
+(function yapperV26(){
+var GIPHY_KEY="d5UCu5G7SqS2joK7FY0lLo6XIbCyB0Xn"; // free key: developers.giphy.com → Create an App → API
+var MEDIA_BUCKET="yapper-media";
+var P_COST=150,S_COST=40,DAY=86400000,LV_AT=[0,1,3,6]; // boost prices and boosts needed per level
+
+/* ---------- styles ---------- */
+var css=document.createElement("style");css.id="yapper-v26";
+css.textContent=[
+"#bar .cbtn{position:absolute;bottom:23px;width:34px;height:34px;border:0;border-radius:10px;background:transparent;color:var(--text);font:inherit;cursor:pointer;z-index:2;transition:transform .2s,background .2s}",
+"#bar .cbtn:hover{background:var(--hover);transform:scale(1.1)}",
+"#attach{right:100px;font-size:18px}",
+"#gifbtn{right:62px;font-size:11px!important;font-weight:800;letter-spacing:.03em;height:24px!important;bottom:28px!important;border:1.5px solid var(--mute)!important;border-radius:6px!important}",
+"#in{padding-right:140px!important}",
+"@media (max-width:900px){#attach{right:96px;bottom:19px}#gifbtn{right:58px;bottom:24px!important}}",
+".mimg{display:block;max-width:min(360px,100%);max-height:320px;border-radius:12px;margin-top:6px;cursor:zoom-in;border:1px solid var(--border);background:rgba(255,255,255,.04)}",
+"#lightbox{position:fixed;inset:0;z-index:90;background:rgba(3,2,12,.9);display:none;place-items:center;padding:20px;cursor:zoom-out}#lightbox.on{display:grid}#lightbox img{max-width:95vw;max-height:88dvh;border-radius:12px}",
+"#main.dropping::before{content:'Drop an image to send it';position:absolute;inset:10px;z-index:20;display:grid;place-items:center;border:2px dashed var(--a2);border-radius:16px;background:rgba(14,17,27,.85);font-size:18px;font-weight:700;pointer-events:none}",
+"#gpick{position:fixed;display:none;z-index:45;width:min(420px,94vw);height:min(460px,calc(100dvh - 24px));box-sizing:border-box;flex-direction:column;background:rgba(18,14,40,.98);border:1px solid var(--border);border-radius:16px;box-shadow:0 14px 50px rgba(0,0,0,.55);padding:10px}#gpick.on{display:flex}",
+".gtop{display:flex;gap:6px;margin-bottom:8px}",
+".gtab{border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);border-radius:10px;padding:7px 10px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}.gtab.on{background:linear-gradient(135deg,var(--a1),var(--a2));border-color:transparent;color:#fff}",
+"#gsearch{flex:1;min-width:0;box-sizing:border-box;padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.07);color:var(--text);font:inherit;font-size:16px;outline:none}#gsearch:focus{border-color:var(--a2)}",
+"#gcats{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;scrollbar-width:none;flex-shrink:0}",
+".gcat{flex:0 0 auto;border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);border-radius:999px;padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer}.gcat:hover{border-color:var(--a2)}",
+"#ggrid{flex:1;overflow-y:auto;columns:2;column-gap:6px}",
+".gitem{position:relative;break-inside:avoid;margin-bottom:6px;border-radius:10px;overflow:hidden;cursor:pointer;background:rgba(255,255,255,.05)}.gitem img{display:block;width:100%}.gitem:hover{outline:2px solid var(--a2)}",
+".gstar{position:absolute;top:5px;right:5px;border:0;border-radius:8px;background:rgba(0,0,0,.6);color:#fff;width:28px;height:28px;cursor:pointer;opacity:0;transition:opacity .15s;font-size:15px}",
+".gitem:hover .gstar,.gstar.on{opacity:1}.gstar.on{color:#facc15}@media (hover:none){.gstar{opacity:.85}}",
+".gmsg{column-span:all;text-align:center;color:var(--mute);font-size:13px;padding:24px 8px;line-height:1.5}",
+".gfoot{font-size:10px;color:var(--mute);text-align:right;margin-top:6px;letter-spacing:.08em}",
+"#top{padding-right:80px!important}",
+"#pinbtn{position:absolute;top:8px;right:14px;z-index:3;border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);border-radius:10px;height:32px;padding:0 10px;font:inherit;font-size:13px;cursor:pointer}#pinbtn.has{border-color:#facc15}",
+"#pinbtnm{display:none}@media (max-width:900px){#pinbtn{display:none}#pinbtnm{display:inline-block;width:auto!important;padding:0 8px;font-size:14px!important}}",
+".rxa.pinb{right:102px}",
+".m.pinned{box-shadow:inset 3px 0 0 #facc15}",
+".m.flash{animation:pinflash 1.8s ease}@keyframes pinflash{0%,45%{background:rgba(250,204,21,.22)}}",
+".pinrow{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid var(--border);margin-bottom:8px}",
+".pinh{display:flex;align-items:center;gap:8px;font-size:13.5px;flex-wrap:wrap}.pint{font-size:11px;color:var(--mute)}",
+".pinav{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:12px;font-weight:700;overflow:hidden;flex-shrink:0}",
+".pintx{white-space:pre-wrap;word-break:break-word;font-size:14px;margin-top:6px}.pinrow .pact{margin-top:8px}",
+".dpin{margin-left:auto;opacity:0;font-size:13px;padding:4px 6px;border-radius:6px;cursor:pointer;flex-shrink:0}.dpin:hover{background:var(--hover)}",
+".dmi:hover .dpin,.dmi.dpinned .dpin{opacity:1}@media (hover:none){.dpin{opacity:.7}}.dmi.dpinned{background:rgba(250,204,21,.06)}",
+".n.boosted{background:linear-gradient(90deg,#f9a8d4,#c4b5fd,#67e8f9,#f9a8d4);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent!important;animation:flow2 4s linear infinite}",
+".bbadge{display:inline-block;margin-left:5px;font-size:11px;vertical-align:middle;filter:drop-shadow(0 0 4px #f472b6)}",
+".blv{display:inline-flex;font-size:10px;font-weight:800;padding:2px 7px;margin-left:6px;border-radius:999px;vertical-align:middle;color:#fff;-webkit-text-fill-color:#fff;background:linear-gradient(135deg,#f472b6,#a855f7);box-shadow:0 0 10px rgba(244,114,182,.6);animation:none}",
+"#side.boost1 #shead,#side.boost2 #shead,#side.boost3 #shead{margin:-4px -2px 8px;padding:12px 10px;border-radius:14px;background:linear-gradient(135deg,color-mix(in srgb,var(--bc,#a855f7) 60%,transparent),color-mix(in srgb,var(--a2) 22%,transparent))}",
+"#side.boost3 #sname{background:linear-gradient(90deg,#fff,#f0abfc,#67e8f9,#fff);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:flow2 3s linear infinite}",
+"#rail .sv.sboost{box-shadow:0 0 0 2px #f472b6,0 0 14px rgba(244,114,182,.55)}",
+".bcard{border-radius:16px;padding:14px;margin:10px 0;border:1px solid var(--border);background:linear-gradient(160deg,rgba(244,114,182,.12),rgba(139,92,246,.08))}",
+".bhead{display:flex;align-items:center;gap:10px;margin-bottom:8px}.bic{font-size:26px}.bt{font-weight:800;font-size:16px}.bs{font-size:12.5px;color:var(--mute)}",
+".bperk{display:flex;gap:10px;align-items:center;font-size:13.5px;padding:4px 0}.bperk.off{opacity:.45}.bperk .bl{margin-left:auto;font-size:10.5px;font-weight:800;color:var(--mute)}",
+".blvbar{height:8px;border-radius:8px;background:rgba(255,255,255,.1);overflow:hidden;margin:8px 0 4px}.blvbar i{display:block;height:100%;border-radius:8px;background:linear-gradient(90deg,#f472b6,#a855f7,#22d3ee)}",
+".blvs{display:flex;justify-content:space-between;font-size:11px;color:var(--mute);margin-bottom:8px}",
+".brow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}.brow input[type=color]{width:44px;height:36px;padding:2px;border-radius:10px;border:1px solid var(--border);background:transparent}",
+".qbtn.boost{background:linear-gradient(135deg,#f472b6,#a855f7);color:#fff;box-shadow:0 0 14px rgba(244,114,182,.45);margin-top:10px}"
+].join("\n");
+document.head.appendChild(css);
+
+/* ---------- helpers ---------- */
+function okMedia(url){
+  try{
+    var x=new URL(url);if(x.protocol!=="https:")return false;
+    if(/^(media\d*|i)\.giphy\.com$/.test(x.hostname))return "gif";
+    var host=Cloud.config&&Cloud.config.url?new URL(Cloud.config.url).hostname:"";
+    if(host&&x.hostname===host&&x.pathname.indexOf("/storage/v1/object/public/"+MEDIA_BUCKET+"/")===0)return "img";
+  }catch(e){}
+  return false;
+}
+function mediaOf(text){var m=/^\[(img|gif)\](\S+)$/.exec(String(text||"").trim());return(m&&okMedia(m[2]))?{k:m[1],u:m[2]}:null;}
+function sendMedia(t){if(!username){openModal();return;}var keep=inp.value;inp.value=t;send();inp.value=keep;}
+function stickBottom(){if(msgs.scrollHeight-msgs.scrollTop-msgs.clientHeight<450)msgs.scrollTop=msgs.scrollHeight;}
+
+/* ---------- lightbox ---------- */
+var lb=pEl("div","");lb.id="lightbox";var lbi=pEl("img","");lbi.alt="";lb.appendChild(lbi);
+lb.onclick=function(){lb.classList.remove("on");lbi.src="";};document.body.appendChild(lb);
+function openLightbox(u){lbi.src=u;lb.classList.add("on");}
+document.addEventListener("keydown",function(e){if(e.key==="Escape"){lb.classList.remove("on");closeGif();}});
+
+/* ---------- image uploads ---------- */
+var uploading=false;
+function maxUpload(){var s=!dmMode&&servers[curS];return((s&&serverLevel(s)>=3)?50:(meBoosted()?25:8))*1048576;}
+function shrink(file,max,q){return new Promise(function(res,rej){var url=URL.createObjectURL(file),im=new Image();im.onload=function(){var sc=Math.min(1,max/Math.max(im.width,im.height)),cv=document.createElement("canvas");cv.width=Math.max(1,Math.round(im.width*sc));cv.height=Math.max(1,Math.round(im.height*sc));var cx=cv.getContext("2d");cx.fillStyle="#0e111b";cx.fillRect(0,0,cv.width,cv.height);cx.drawImage(im,0,0,cv.width,cv.height);URL.revokeObjectURL(url);cv.toBlob(function(b){if(b)res(b);else rej(new Error("Could not process that image."));},"image/jpeg",q);};im.onerror=function(){URL.revokeObjectURL(url);rej(new Error("Could not read that image."));};im.src=url;});}
+function uploadBlob(blob,ext,type){
+  if(!Cloud.client)return Promise.reject(new Error("Not connected to the shared database yet."));
+  return Cloud.client.auth.getUser().then(function(r){
+    var uid=r&&r.data&&r.data.user&&r.data.user.id;if(!uid)throw new Error("Not signed in.");
+    var path=uid+"/"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,8)+"."+ext;
+    return Cloud.client.storage.from(MEDIA_BUCKET).upload(path,blob,{contentType:type,cacheControl:"31536000",upsert:false}).then(function(u){
+      if(u.error)throw u.error;return Cloud.client.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+    });
+  });
+}
+function handleFile(file){
+  if(!username){openModal();return;}
+  if(inp.disabled){toast("You can’t send messages here.");return;}
+  if(uploading){toast("Hang on, still uploading the last one…");return;}
+  if(!/^image\/(png|jpeg|webp|gif)$/.test(file.type)){toast("Choose a PNG, JPG, WEBP or GIF image.");return;}
+  var lim=maxUpload();
+  if(file.size>lim){toast("That file is over "+Math.round(lim/1048576)+" MB."+(meBoosted()?"":" 🚀 Yapper Boost raises the limit to 25 MB."),meBoosted()?null:[["Boost","",function(){showBoost();}]]);return;}
+  var gif=file.type==="image/gif";uploading=true;toast("📤 Uploading "+(gif?"GIF":"image")+"…");
+  (gif?Promise.resolve(file):shrink(file,1600,.85))
+    .then(function(b){return uploadBlob(b,gif?"gif":"jpg",gif?"image/gif":"image/jpeg");})
+    .then(function(url){uploading=false;sendMedia("[img]"+url);})
+    .catch(function(e){uploading=false;console.warn("Upload failed",e);toast("Upload failed: "+((e&&e.message)||"unknown error")+". Make sure yapper-v2.6-setup.sql has been run.");});
+}
+function pickMedia(){
+  if(!username){openModal();return;}
+  var f=document.createElement("input");f.type="file";f.accept="image/png,image/jpeg,image/webp,image/gif";
+  f.onchange=function(){var file=f.files&&f.files[0];if(file)handleFile(file);};f.click();
+}
+inp.addEventListener("paste",function(e){var fs=e.clipboardData&&e.clipboardData.files;if(fs&&fs[0]&&/^image\//.test(fs[0].type)){e.preventDefault();handleFile(fs[0]);}});
+var mainEl=document.getElementById("main"),dragN=0;
+function hasFiles(e){return e.dataTransfer&&Array.prototype.indexOf.call(e.dataTransfer.types||[],"Files")>=0;}
+mainEl.addEventListener("dragenter",function(e){if(!hasFiles(e))return;dragN++;mainEl.classList.add("dropping");});
+mainEl.addEventListener("dragleave",function(){dragN=Math.max(0,dragN-1);if(!dragN)mainEl.classList.remove("dropping");});
+mainEl.addEventListener("dragover",function(e){if(hasFiles(e))e.preventDefault();});
+mainEl.addEventListener("drop",function(e){if(!hasFiles(e))return;e.preventDefault();dragN=0;mainEl.classList.remove("dropping");var f=e.dataTransfer.files[0];if(f)handleFile(f);});
+
+/* ---------- composer buttons ---------- */
+var barEl=document.getElementById("bar"),emoEl=document.getElementById("emo");
+var attachBtn=pEl("button","cbtn","📎");attachBtn.id="attach";attachBtn.type="button";attachBtn.title="Upload an image";attachBtn.onclick=pickMedia;
+var gifBtn=pEl("button","cbtn","GIF");gifBtn.id="gifbtn";gifBtn.type="button";gifBtn.title="GIFs";
+gifBtn.onclick=function(){if(gp.classList.contains("on"))closeGif();else openGif(gifBtn);};
+barEl.insertBefore(attachBtn,emoEl);barEl.insertBefore(gifBtn,emoEl);
+
+/* ---------- GIF picker (GIPHY) ---------- */
+var GP={tab:"trend",q:"",req:0,timer:null,favs:[]};
+try{GP.favs=(JSON.parse(localStorage.getItem("yapper:giffavs")||"[]")||[]).filter(function(f){return f&&typeof f.u==="string"&&okMedia(f.u)==="gif";}).slice(0,60);}catch(e){}
+var gp=pEl("div","");gp.id="gpick";
+var gtop=pEl("div","gtop"),gs=document.createElement("input");gs.id="gsearch";gs.placeholder="Search GIPHY";gs.autocomplete="off";
+var tTrend=pEl("button","gtab on","🔥"),tFav=pEl("button","gtab","★");tTrend.title="Trending";tFav.title="Favorites";
+gtop.appendChild(gs);gtop.appendChild(tTrend);gtop.appendChild(tFav);
+var gcats=pEl("div","");gcats.id="gcats";
+["Happy","LOL","Hype","Sad","Dance","Thumbs up","Facepalm","Wow","Cat","Dog","Spooky","Good night"].forEach(function(t){var b=pEl("button","gcat",t);b.onclick=function(){gs.value=t;GP.q=t;setTab("trend");gifLoad();};gcats.appendChild(b);});
+var ggrid=pEl("div","");ggrid.id="ggrid";
+gp.appendChild(gtop);gp.appendChild(gcats);gp.appendChild(ggrid);gp.appendChild(pEl("div","gfoot","POWERED BY GIPHY"));
+document.body.appendChild(gp);
+function setTab(t){GP.tab=t;tTrend.classList.toggle("on",t==="trend");tFav.classList.toggle("on",t==="fav");}
+tTrend.onclick=function(){setTab("trend");gifLoad();};
+tFav.onclick=function(){setTab("fav");gifLoad();};
+gs.oninput=function(){GP.q=gs.value.trim();setTab("trend");clearTimeout(GP.timer);GP.timer=setTimeout(gifLoad,350);};
+function saveFavs(){try{localStorage.setItem("yapper:giffavs",JSON.stringify(GP.favs));}catch(e){}}
+function toggleFav(g){var i=-1;GP.favs.forEach(function(f,j){if(f.u===g.u)i=j;});if(i>=0)GP.favs.splice(i,1);else GP.favs.unshift(g);GP.favs=GP.favs.slice(0,60);saveFavs();gifLoad(true);}
+function gifRender(items,msg){
+  ggrid.innerHTML="";
+  if(msg){ggrid.appendChild(pEl("div","gmsg",msg));return;}
+  items.forEach(function(g){
+    var it=pEl("div","gitem"),im=pEl("img","");im.src=g.p;im.alt=g.t||"GIF";im.loading="lazy";if(g.w&&g.h)im.style.aspectRatio=g.w+"/"+g.h;it.appendChild(im);
+    var fav=GP.favs.some(function(f){return f.u===g.u;}),st=pEl("button","gstar"+(fav?" on":""),fav?"★":"☆");
+    st.title=fav?"Remove from favorites":"Add to favorites";st.onclick=function(e){e.stopPropagation();toggleFav(g);};it.appendChild(st);
+    it.onclick=function(){closeGif();sendMedia("[gif]"+g.u);};ggrid.appendChild(it);
+  });
+}
+var lastItems=[];
+function gifLoad(keep){
+  if(GP.tab==="fav"){gifRender(GP.favs,GP.favs.length?"":"No favorites yet. Tap ☆ on a GIF to save it here.");return;}
+  if(keep&&lastItems.length){gifRender(lastItems,"");return;}
+  if(!GIPHY_KEY||/PASTE/.test(GIPHY_KEY)){gifRender([],"GIF search needs a free GIPHY API key. Paste it into GIPHY_KEY at the top of the v2.6 code. Your ★ favorites still work.");return;}
+  var q=GP.q,my=++GP.req;gifRender([],"Loading…");
+  var url="https://api.giphy.com/v1/gifs/"+(q?"search":"trending")+"?api_key="+encodeURIComponent(GIPHY_KEY)+"&limit=30&rating=pg-13"+(q?"&q="+encodeURIComponent(q):"");
+  fetch(url).then(function(r){return r.json();}).then(function(j){
+    if(my!==GP.req)return;
+    lastItems=(j.data||[]).map(function(g){var im=g.images||{},fh=im.fixed_height||{},fw=im.fixed_width||fh;return{u:fh.url,p:fw.url||fh.url,w:+fw.width||0,h:+fw.height||0,t:String(g.title||"").slice(0,80)};}).filter(function(g){return okMedia(g.u)==="gif";});
+    gifRender(lastItems,lastItems.length?"":"No GIFs found.");
+  }).catch(function(){if(my===GP.req)gifRender([],"Couldn’t reach GIPHY. Check your connection or API key.");});
+}
+function openGif(anchor){
+  if(!username){openModal();return;}
+  if(inp.disabled){toast("You can’t send messages here.");return;}
+  closePicker();gp.classList.add("on");
+  var r=anchor.getBoundingClientRect(),w=gp.offsetWidth,h=gp.offsetHeight;
+  var left=Math.max(8,Math.min(r.right-w,innerWidth-w-8)),top=r.top-h-8;if(top<8)top=Math.max(8,Math.min(r.bottom+8,innerHeight-h-8));
+  gp.style.left=left+"px";gp.style.top=top+"px";
+  if(!ggrid.children.length)gifLoad();
+  if(innerWidth>900)gs.focus();
+}
+function closeGif(){gp.classList.remove("on");}
+document.addEventListener("pointerdown",function(e){if(!gp.classList.contains("on"))return;if(gp.contains(e.target)||e.target===gifBtn)return;closeGif();});
+
+/* ---------- pinned messages ---------- */
+function msgId(m){return m.client_id||(m.user+"|"+m.time+"|"+String(m.text||"").slice(0,80));}
+function roomKey(){return dmMode?"dm/"+[String(username),String(cur)].sort().join("+"):"srv/"+String(servers[curS].name).toLowerCase()+"/"+cur;}
+function allPins(){try{var p=JSON.parse(localStorage.getItem("yapper:pins")||"{}");return(p&&typeof p==="object")?p:{};}catch(e){return{};}}
+function getPins(){var l=allPins()[roomKey()];return Array.isArray(l)?l:[];}
+function setPins(list){var all=allPins();all[roomKey()]=list;try{localStorage.setItem("yapper:pins",JSON.stringify(all));}catch(e){toast("Couldn’t save the pin on this device.");}}
+function canPin(){return dmMode||(isMgr(servers[curS])&&!preview);}
+function togglePin(m){
+  if(!canPin()){toast("Only moderators can pin messages in this server.");return;}
+  var id=msgId(m),list=getPins(),has=list.some(function(p){return p.id===id;});
+  if(has){list=list.filter(function(p){return p.id!==id;});toast("📌 Message unpinned.");}
+  else{if(list.length>=50){toast("Up to 50 pins per channel. Unpin one first.");return;}list.push({id:id,user:String(m.user),text:String(m.text||"").slice(0,600),time:m.time,by:username,at:Date.now()});toast("📌 Message pinned.");if(!dmMode)auditLog("message pinned","#"+cur+" · "+m.user);}
+  setPins(list);render();
+}
+function jumpTo(id){
+  closeP();var arr=chans()[cur]||[],i=-1;arr.forEach(function(m,j){if(msgId(m)===id)i=j;});
+  var el=msgs.children[i];if(i<0||!el){toast("That message isn’t loaded anymore.");return;}
+  el.scrollIntoView({block:"center",behavior:"smooth"});el.classList.add("flash");setTimeout(function(){el.classList.remove("flash");},1900);
+}
+function showPins(){
+  var c=document.getElementById("pcard");c.innerHTML="";
+  var body=pEl("div","pbody setroot");body.style.paddingTop="20px";
+  var h=pEl("h2","","📌 Pinned messages");h.style.cssText=GRAD;body.appendChild(h);
+  body.appendChild(pEl("div","mh",(dmMode?"@ ":"# ")+cur));
+  var list=getPins();
+  if(!list.length)body.appendChild(pEl("div","psec",canPin()?"Nothing pinned yet. Hover a message and tap 📌 to pin it.":"Nothing pinned yet. Moderators can pin important messages here."));
+  list.slice().reverse().forEach(function(p){
+    var card=pEl("div","pinrow"),hd=pEl("div","pinh"),isB=p.user==="YapperBot";
+    var a=pEl("span","pinav",p.user[0].toUpperCase());a.style.background=isB?"var(--bot)":color(p.user);avFill(a,p.user,isB);
+    hd.appendChild(a);hd.appendChild(pEl("b","",p.user));hd.appendChild(pEl("span","pint",p.time+" · pinned by "+p.by));card.appendChild(hd);
+    var md=mediaOf(p.text);
+    if(md){var im=pEl("img","mimg");im.src=md.u;im.alt="";im.onclick=function(){openLightbox(md.u);};card.appendChild(im);}
+    else card.appendChild(pEl("div","pintx",p.text));
+    var act=pEl("div","pact"),j=pEl("button","fbtn","Jump");j.onclick=function(){jumpTo(p.id);};act.appendChild(j);
+    if(canPin()){var u=pEl("button","fbtn no","Unpin");u.onclick=function(){setPins(getPins().filter(function(x){return x.id!==p.id;}));render();showPins();};act.appendChild(u);}
+    card.appendChild(act);body.appendChild(card);
+  });
+  var act=pEl("div","pact"),cl=pEl("button","btn alt","Close");cl.onclick=closeP;act.appendChild(cl);body.appendChild(act);
+  c.appendChild(body);document.getElementById("pmodal").classList.add("show");
+}
+var pinTop=pEl("button","","📌");pinTop.id="pinbtn";pinTop.type="button";pinTop.title="Pinned messages";pinTop.onclick=showPins;mainEl.appendChild(pinTop);
+var pinM=pEl("button","","📌");pinM.id="pinbtnm";pinM.setAttribute("aria-label","Pinned messages");pinM.onclick=showPins;
+document.getElementById("mbar").insertBefore(pinM,document.getElementById("mmem"));
+function updatePinBtn(){if(!username)return;var n=getPins().length,t=n?"📌 "+n:"📌";[pinTop,pinM].forEach(function(b){b.textContent=t;b.classList.toggle("has",!!n);});}
+
+/* ---------- pinned conversations (DMs) ---------- */
+function dmPins(){try{return(JSON.parse(localStorage.getItem("yapper:pindm:"+(username||""))||"[]")||[]).filter(okName);}catch(e){return[];}}
+function toggleDmPin(n){
+  var l=dmPins(),i=l.indexOf(n);
+  if(i>=0){l.splice(i,1);toast("Unpinned "+n+".");}else{if(l.length>=10){toast("You can pin up to 10 conversations.");return;}l.unshift(n);toast("📌 Pinned "+n+" to the top.");}
+  try{localStorage.setItem("yapper:pindm:"+username,JSON.stringify(l));}catch(e){}
+  renderNav();renderMembers();
+}
+function decorateDM(){
+  var box=document.querySelector("#chlist .dmlist");if(!box)return;
+  var pins=dmPins(),byName={};
+  Array.prototype.forEach.call(box.querySelectorAll(".dmi"),function(r){
+    var nmEl=r.querySelector(".dmn"),n=nmEl&&nmEl.firstChild?nmEl.firstChild.nodeValue:"";byName[n]=r;
+    var ds=r.querySelector(".dms");if(ds&&/^\[(img|gif)\]/.test(ds.textContent))ds.textContent=/^\[gif\]/.test(ds.textContent)?"🎞 GIF":"🖼 Image";
+    var on=pins.indexOf(n)>=0;r.classList.toggle("dpinned",on);
+    var old=r.querySelector(".dpin");if(old)old.remove();
+    var b=pEl("span","dpin",on?"📌":"📍");b.setAttribute("role","button");b.title=on?"Unpin":"Pin to top";
+    b.onclick=function(e){e.stopPropagation();toggleDmPin(n);};r.appendChild(b);
+  });
+  pins.slice().reverse().forEach(function(n){var r=byName[n];if(r)box.insertBefore(r,box.firstChild);});
+}
+
+/* ---------- Yapper Boosts ---------- */
+function myBoost(){try{var b=JSON.parse(localStorage.getItem("yapper:pboost:"+(username||""))||"null");return b&&typeof b==="object"?{until:+b.until||0,banner:String(b.banner||"")}:{until:0,banner:""};}catch(e){return{until:0,banner:""};}}
+function saveMyBoost(b){try{localStorage.setItem("yapper:pboost:"+username,JSON.stringify(b));}catch(e){}cloudPublishProfile(true);render();renderMembers();}
+function meBoosted(){return !!username&&myBoost().until>Date.now();}
+function profBoost(u){var p=Cloud.profileCache&&Cloud.profileCache[String(u).toLowerCase()],b=p&&p.boost;if(typeof b==="string"){try{b=JSON.parse(b);}catch(e){b=null;}}return b&&typeof b==="object"?b:null;}
+function isBoosted(u){if(!u||u==="YapperBot")return false;if(u===username)return meBoosted();var b=profBoost(u);return !!(b&&+b.until>Date.now());}
+function boostBanner(u){var c=u===username?myBoost().banner:((profBoost(u)||{}).banner||"");return /^#[0-9a-f]{6}$/i.test(c)?c:"#f472b6";}
+function buyPersonal(){
+  if(!username){openModal();return;}
+  if(GEM.bal<P_COST){toast("You need 💎 "+P_COST+". Finish quests to earn more.",[["Quests","",function(){showQuests();}]]);return;}
+  GEM.bal-=P_COST;saveGems();var b=myBoost();b.until=Math.max(b.until,Date.now())+30*DAY;saveMyBoost(b);
+  fxConfetti();toast("🚀 You’re boosted until "+new Date(b.until).toLocaleDateString()+"!");showBoost();
+}
+var SB={rows:[],local:{}};
+try{SB.local=JSON.parse(localStorage.getItem("yapper:sboosts")||"{}")||{};}catch(e){SB.local={};}
+function sKey(s){return String(s.name).toLowerCase().slice(0,40);}
+function serverBoosts(s){
+  var k=sKey(s),t=Date.now(),out=[],ids={};
+  SB.rows.forEach(function(r){var u=new Date(r.expires_at).getTime();if(String(r.server).toLowerCase()===k&&u>t&&!ids[r.boost_id]){ids[r.boost_id]=1;out.push({id:r.boost_id,u:r.username,until:u});}});
+  (SB.local[k]||[]).forEach(function(b){if(b.until>t&&!ids[b.id]){ids[b.id]=1;out.push(b);}});
+  return out;
+}
+function serverLevel(s){if(!s)return 0;var n=serverBoosts(s).length;return n>=LV_AT[3]?3:n>=LV_AT[2]?2:n>=LV_AT[1]?1:0;}
+function serverBanner(s){try{var m=JSON.parse(localStorage.getItem("yapper:sbanner")||"{}")||{},c=m[sKey(s)];return /^#[0-9a-f]{6}$/i.test(c||"")?c:color(s.name);}catch(e){return color(s.name);}}
+function setServerBanner(s,c){try{var m=JSON.parse(localStorage.getItem("yapper:sbanner")||"{}")||{};m[sKey(s)]=c;localStorage.setItem("yapper:sbanner",JSON.stringify(m));}catch(e){}}
+function loadBoosts(){
+  if(!Cloud.client)return;
+  Cloud.client.from("yapper_boosts").select("boost_id,server,username,expires_at").gt("expires_at",new Date().toISOString()).limit(2000).then(function(r){
+    if(r.error){console.warn("Boost sync unavailable; run yapper-v2.6-setup.sql:",r.error.message);return;}
+    SB.rows=r.data||[];renderNav();
+  });
+}
+function boostServer(s){
+  if(!username){openModal();return;}
+  if(GEM.bal<S_COST){toast("You need 💎 "+S_COST+". Finish quests to earn more.",[["Quests","",function(){showQuests();}]]);return;}
+  GEM.bal-=S_COST;saveGems();
+  var k=sKey(s),b={id:cloudId(),u:username,until:Date.now()+30*DAY};
+  (SB.local[k]=SB.local[k]||[]).push(b);
+  Object.keys(SB.local).forEach(function(x){SB.local[x]=SB.local[x].filter(function(y){return y.until>Date.now();});});
+  try{localStorage.setItem("yapper:sboosts",JSON.stringify(SB.local));}catch(e){}
+  if(Cloud.client)Cloud.client.from("yapper_boosts").insert({boost_id:b.id,server:k,username:username,expires_at:new Date(b.until).toISOString()}).then(function(r){if(r.error)console.warn("Boost not shared:",r.error.message);else loadBoosts();});
+  fxConfetti();var n=serverBoosts(s).length;
+  toast("💎 You boosted "+s.name+"! It now has "+n+" boost"+(n===1?"":"s")+".");
+  if(!dmMode&&servers[curS]===s&&!isVoiceCh(s,cur))bot(cur,"💎 "+username+" just boosted the server! "+s.name+" is now at Level "+serverLevel(s)+".");
+  renderNav();showBoost();
+}
+function perkRow(icon,text,on,label){var r=pEl("div","bperk"+(on?"":" off"));r.appendChild(pEl("span","",icon));r.appendChild(pEl("span","",text));if(label)r.appendChild(pEl("span","bl",label));return r;}
+function showBoost(){
+  var c=document.getElementById("pcard");c.innerHTML="";
+  var body=pEl("div","pbody setroot");body.style.paddingTop="20px";
+  var h=pEl("h2","","💎 Yapper Boosts");h.style.cssText=GRAD;body.appendChild(h);
+  body.appendChild(gemBar("Spend diamonds on boosts. Each boost lasts 30 days."));
+  /* personal */
+  var b=myBoost(),on=b.until>Date.now(),pc=pEl("div","bcard"),ph=pEl("div","bhead");
+  ph.appendChild(pEl("span","bic","🚀"));var pt=pEl("div","");pt.appendChild(pEl("div","bt","Yapper Boost · you"));pt.appendChild(pEl("div","bs",on?"Active until "+new Date(b.until).toLocaleDateString():"Not active"));ph.appendChild(pt);pc.appendChild(ph);
+  [["💎","Booster badge next to your name"],["🌈","Shimmering name in chat"],["🎨","Custom profile banner color"],["📁","25 MB uploads instead of 8 MB"],["✨","Double diamonds from quests"]].forEach(function(p){pc.appendChild(perkRow(p[0],p[1],on));});
+  if(on){
+    var br=pEl("div","brow"),ci=document.createElement("input");ci.type="color";ci.value=boostBanner(username);
+    ci.onchange=function(){var x=myBoost();x.banner=ci.value;saveMyBoost(x);toast("🎨 Banner color saved.");};
+    br.appendChild(ci);br.appendChild(pEl("span","bs","Profile banner color"));pc.appendChild(br);
+  }
+  var pb=pEl("button","qbtn boost"+(GEM.bal<P_COST?" poor":""),(on?"Extend 30 days":"Boost me")+" · 💎 "+P_COST);pb.onclick=buyPersonal;pc.appendChild(pb);
+  body.appendChild(pc);
+  /* server */
+  if(!dmMode){
+    var s=servers[curS],list=serverBoosts(s),n=list.length,lv=serverLevel(s),mgr=isMgr(s)&&!preview;
+    var sc=pEl("div","bcard"),sh=pEl("div","bhead");sh.appendChild(pEl("span","bic","🏰"));
+    var st=pEl("div","");st.appendChild(pEl("div","bt",s.name+" · Level "+lv));st.appendChild(pEl("div","bs",n+" active boost"+(n===1?"":"s")+(lv<3?" · "+(LV_AT[lv+1]-n)+" more for Level "+(lv+1):" · max level")));sh.appendChild(st);sc.appendChild(sh);
+    var bar=pEl("div","blvbar"),fill=pEl("i","");fill.style.width=Math.min(100,n/LV_AT[3]*100)+"%";bar.appendChild(fill);sc.appendChild(bar);
+    var lbl=pEl("div","blvs");[0,1,2,3].forEach(function(i){lbl.appendChild(pEl("span","",i?"Lv"+i+" · "+LV_AT[i]:"0"));});sc.appendChild(lbl);
+    [[1,"💎","Boost badge and glowing server icon"],[1,"🖼","Server banner in the sidebar"],[2,"🎨","Custom banner color (moderators)"],[2,"🎞","Animated GIF server icon (moderators)"],[3,"✨","Shimmering server name"],[3,"📁","50 MB uploads for everyone here"]].forEach(function(p){sc.appendChild(perkRow(p[1],p[2],lv>=p[0],"LV"+p[0]));});
+    if(n){var who={};list.forEach(function(x){who[x.u]=(who[x.u]||0)+1;});sc.appendChild(pEl("div","bs","Boosted by "+Object.keys(who).map(function(u){return u+(who[u]>1?" ×"+who[u]:"");}).join(", ")));}
+    if(mgr&&lv>=2){
+      var row=pEl("div","brow"),col=document.createElement("input");col.type="color";col.value=serverBanner(s);
+      col.onchange=function(){setServerBanner(s,col.value);renderNav();toast("🎨 Server banner updated.");};
+      var gi=pEl("button","fbtn","🎞 Upload GIF icon");gi.onclick=function(){
+        var f=document.createElement("input");f.type="file";f.accept="image/gif";
+        f.onchange=function(){var file=f.files&&f.files[0];if(!file)return;if(file.type!=="image/gif"){toast("Choose a GIF file.");return;}if(file.size>350*1024){toast("Keep animated icons under 350 KB.");return;}
+          var rd=new FileReader();rd.onload=function(){s.image=String(rd.result);saveS();renderNav();toast("🎞 Animated icon set!");showBoost();};rd.readAsDataURL(file);};
+        f.click();
+      };
+      row.appendChild(col);row.appendChild(pEl("span","bs","Banner"));row.appendChild(gi);sc.appendChild(row);
+    }
+    var sb=pEl("button","qbtn boost"+(GEM.bal<S_COST?" poor":""),"Boost "+s.name+" · 💎 "+S_COST);sb.onclick=function(){boostServer(s);};sc.appendChild(sb);
+    body.appendChild(sc);
+  }else body.appendChild(pEl("div","mh","Open a server to boost it."));
+  var act=pEl("div","pact"),cl=pEl("button","btn alt","Close");cl.onclick=closeP;act.appendChild(cl);body.appendChild(act);
+  c.appendChild(body);document.getElementById("pmodal").classList.add("show");
+}
+
+/* ---------- profile sync: include boost data ---------- */
+cloudPublishProfile=function(force){
+  if(!Cloud.client||!username)return;
+  var t=Date.now();if(!force&&t-Cloud.profileLastPush<30000)return;Cloud.profileLastPush=t;
+  var b=myBoost();
+  var profile={username:String(username).slice(0,20),verified:!!verified,bio:String(myBio||"").slice(0,120),avatar:String(myAvatar||"").slice(0,500000),deco:String(myDeco||""),tag:myTag||null,last_seen:new Date(t).toISOString(),boost:b.until>t?{until:b.until,banner:/^#[0-9a-f]{6}$/i.test(b.banner)?b.banner:""}:null};
+  var push=function(p,retry){
+    Cloud.client.from("yapper_profiles").upsert(p,{onConflict:"username"}).then(function(r){
+      if(r.error){if(retry&&/boost/i.test(r.error.message)){var q=Object.assign({},p);delete q.boost;push(q,false);return;}console.warn("Profile sync failed:",r.error.message);return;}
+      var k=p.username.toLowerCase();Cloud.profileCache[k]=Object.assign({},Cloud.profileCache[k]||{},p);renderMembers();
+    });
+  };
+  push(profile,true);
+};
+cloudLoadProfiles=function(){
+  if(!Cloud.client)return;
+  Cloud.client.from("yapper_profiles").select("*").order("last_seen",{ascending:false}).limit(500).then(function(r){
+    if(r.error){console.warn("Member directory unavailable:",r.error.message);return;}
+    Cloud.profileCache={};
+    (r.data||[]).forEach(function(p){if(!p||!p.username)return;var vk=String(p.username).toLowerCase();try{var vu=JSON.parse(localStorage.getItem("yapper:verifiedUsers")||"{}");if(Object.prototype.hasOwnProperty.call(vu,vk))p.verified=!!vu[vk];}catch(e){}Cloud.profileCache[vk]=p;});
+    renderMembers();
+  });
+};
+
+/* ---------- hook into existing screens ---------- */
+var _render=render;
+render=function(){
+  _render();updatePinBtn();
+  if(!dmMode&&isVoiceCh(servers[curS],cur))return;
+  var arr=chans()[cur]||[],els=msgs.children,pinned={},cp=canPin();
+  getPins().forEach(function(p){pinned[p.id]=1;});
+  for(var i=0;i<els.length&&i<arr.length;i++)(function(el,m){
+    var md=mediaOf(m.text);
+    if(md){
+      var b=el.querySelector(".b");
+      if(b){b.className="b";b.innerHTML="";var im=pEl("img","mimg");im.src=md.u;im.alt=md.k==="gif"?"GIF":"Image";im.loading="lazy";im.onload=stickBottom;im.onclick=function(e){e.stopPropagation();openLightbox(md.u);};b.appendChild(im);}
+      var tl=el.querySelector(".trl");if(tl)tl.remove();var tb=el.querySelector(".trb");if(tb)tb.remove();
+    }
+    var isPin=!!pinned[msgId(m)];if(isPin)el.classList.add("pinned");
+    if(cp){var pb=pEl("button","rxa pinb",isPin?"📌✕":"📌");pb.title=isPin?"Unpin message":"Pin message";pb.onclick=function(ev){ev.stopPropagation();togglePin(m);};el.appendChild(pb);}
+    if(!m.bot&&isBoosted(m.user)){var n=el.querySelector(".n");if(n){n.classList.add("boosted");n.insertAdjacentElement("afterend",pEl("span","bbadge","💎"));}}
+  })(els[i],arr[i]);
+};
+var _trView=trView;trView=function(m){return mediaOf(m.text)?null:_trView(m);};
+var _renderDM=renderDM;
+renderDM=function(){
+  var r=_renderDM();decorateDM();
+  var si=document.querySelector("#chlist .dmsearch input");
+  if(si&&!si._v26){si._v26=1;var o=si.oninput;si.oninput=function(){if(o)o.apply(this,arguments);decorateDM();};}
+  return r;
+};
+var _renderNav=renderNav;
+renderNav=function(){
+  _renderNav();
+  var rail=document.querySelectorAll("#rail > .sv");
+  servers.forEach(function(s,i){var b=rail[2+i];if(b)b.classList.toggle("sboost",serverLevel(s)>=1);});
+  var side=document.getElementById("side");side.classList.remove("boost1","boost2","boost3");
+  if(!dmMode){
+    var s=servers[curS],lv=serverLevel(s);
+    if(lv){side.classList.add("boost"+lv);side.style.setProperty("--bc",lv>=2?serverBanner(s):color(s.name));var chip=pEl("span","blv","💎 Lv"+lv);chip.title="Boosted server · tap to boost";chip.style.cursor="pointer";chip.onclick=showBoost;document.getElementById("sname").appendChild(chip);}
+  }
+  updatePinBtn();
+};
+var _renderMembers=renderMembers;
+renderMembers=function(){
+  _renderMembers();if(dmMode)return;
+  Array.prototype.forEach.call(document.querySelectorAll("#members .mem .mn"),function(n){var u=n.textContent.split(" ")[0];if(isBoosted(u)&&!n.querySelector(".bbadge"))n.appendChild(pEl("span","bbadge","💎"));});
+};
+var _rdp=renderDMProfile;
+renderDMProfile=function(el){
+  _rdp(el);var act=el.querySelector(".dmp .pact");if(!act||!username)return;
+  var n=cur,on=dmPins().indexOf(n)>=0,b=pEl("button","btn alt",on?"📌 Unpin conversation":"📌 Pin to top");b.style.width="100%";b.onclick=function(){toggleDmPin(n);};act.appendChild(b);
+  if(isBoosted(n)){var ban=el.querySelector(".dmpban");if(ban)ban.style.background="linear-gradient(135deg,"+boostBanner(n)+",#f472b6 55%,#a855f7)";var nm=el.querySelector(".dmpn");if(nm)nm.appendChild(pEl("span","bbadge","💎 Booster"));}
+};
+var _showProfile=showProfile;
+showProfile=function(m){
+  _showProfile(m);if(!m||m.bot||!isBoosted(m.u))return;
+  var c=document.getElementById("pcard"),ban=c.querySelector(".pban"),nm=c.querySelector(".pname");
+  if(ban)ban.style.background="linear-gradient(135deg,"+boostBanner(m.u)+",#f472b6 55%,#a855f7)";
+  if(nm)nm.appendChild(pEl("span","bbadge","💎 Booster"));
+};
+var _claim=claimQuest;
+claimQuest=function(id){var before=GEM.bal;_claim(id);var got=GEM.bal-before;if(got>0&&meBoosted()){GEM.bal+=got;saveGems();toast("🚀 Boost bonus: +"+got+" 💎");}};
+function addRowBeforeActions(sel,row){var body=document.querySelector("#pcard "+sel);if(!body)return;body.insertBefore(row,body.querySelector(".pact"));}
+var _showShop=showShop;
+showShop=function(){_showShop();addRowBeforeActions(".shoproot",pEl("div","mh","BOOSTS"));addRowBeforeActions(".shoproot",arow("💎","Yapper Boosts",meBoosted()?"You’re boosted · boost a server too":"Boost yourself or a server",showBoost));};
+var _showSettings=showSettings;
+showSettings=function(){_showSettings();addRowBeforeActions(".setroot",arow("💎","Yapper Boosts",meBoosted()?"Active until "+new Date(myBoost().until).toLocaleDateString():"Boost yourself or a server",showBoost));};
+var _showServerMenu=showServerMenu;
+showServerMenu=function(){_showServerMenu();var s=servers[curS];addRowBeforeActions(".setroot",arow("💎","Boost this server","Level "+serverLevel(s)+" · "+serverBoosts(s).length+" boosts",showBoost));};
+document.getElementById("sset").onclick=showServerMenu;
+document.getElementById("uset").onclick=showSettings;
+
+/* ---------- release notes ---------- */
+APP_VER="2.6";
+CHANGELOG.unshift({v:"2.6",t:"Media, GIFs, pins & boosts",d:"Oct 27, 2026",items:[
+  ["new","Send images with 📎, paste or drag and drop (8 MB, more with boosts)"],
+  ["new","GIF picker powered by GIPHY with trending, search, categories and ★ favorites"],
+  ["new","Pin messages in channels and DMs, and pin conversations to the top of your DMs"],
+  ["new","Yapper Boosts: boost yourself or a server with 💎 for badges, banners, bigger uploads and more"]]});
+
+/* ---------- start ---------- */
+setTimeout(loadBoosts,2500);setInterval(loadBoosts,60000);
+renderNav();render();renderMembers();
+})();
+/* =================== end of YAPPER v2.6 ADD-ON =================== */
+/* ===================================================================
+   YAPPER v2.7 ADD-ON: message effects + diamond drops
+   Lives inside the main <script>, after the v2.6 add-on.
+   =================================================================== */
+(function yapperV27(){
+var FX_LIST=[
+  {id:"confetti",ic:"🎉",n:"Confetti"},
+  {id:"boom",ic:"💥",n:"Boom"},
+  {id:"shake",ic:"🫨",n:"Shake"},
+  {id:"rainbow",ic:"🌈",n:"Rainbow"},
+  {id:"shout",ic:"📢",n:"Shout"},
+  {id:"ghost",ic:"👻",n:"Ghost"},
+  {id:"sparkle",ic:"✨",n:"Sparkle"},
+  {id:"fire",ic:"🔥",n:"Fire",boost:1},
+  {id:"love",ic:"💖",n:"Love",boost:1},
+  {id:"glitch",ic:"👾",n:"Glitch",boost:1}
+];
+var FXMAP={};FX_LIST.forEach(function(f){FXMAP[f.id]=f;});
+var FX_NAMES=FX_LIST.map(function(f){return f.id;}).join("|");
+var DROP_TTL=60000,DROP_CHANCE=0.06,DROP_GAP=180000;
+
+/* ---------- styles ---------- */
+var css=document.createElement("style");css.id="yapper-v27";
+css.textContent=[
+"#fxbtn{right:138px;font-size:17px}#fxbtn.on{background:linear-gradient(135deg,var(--a1),var(--a2))!important}",
+"#in{padding-right:178px!important}",
+"@media (max-width:900px){#fxbtn{right:134px;bottom:19px}}",
+"#fxchip{position:absolute;left:24px;bottom:calc(100% - 2px);display:none;align-items:center;gap:6px;padding:4px 5px 4px 12px;border-radius:999px;background:rgba(18,14,40,.97);border:1px solid var(--a2);font-size:12.5px;font-weight:700;z-index:3;box-shadow:0 0 16px color-mix(in srgb,var(--a2) 40%,transparent)}",
+"#fxchip.on{display:inline-flex}#fxchip button{border:0;background:var(--hover);color:var(--text);border-radius:999px;width:22px;height:22px;cursor:pointer;font-size:11px}",
+"#fxpick{position:fixed;display:none;z-index:45;width:min(330px,94vw);box-sizing:border-box;background:rgba(18,14,40,.98);border:1px solid var(--border);border-radius:16px;box-shadow:0 14px 50px rgba(0,0,0,.55);padding:10px}#fxpick.on{display:block}",
+".fxh{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--mute);margin:2px 4px 8px}",
+".fxgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}",
+".fxt{display:flex;align-items:center;gap:8px;padding:10px;border-radius:12px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;text-align:left;transition:transform .15s,border-color .15s}",
+".fxt:hover{border-color:var(--a2);transform:translateY(-1px)}.fxt.on{border-color:var(--a2);background:color-mix(in srgb,var(--a1) 25%,transparent)}.fxt .fi{font-size:20px}.fxt .lk{margin-left:auto;font-size:10px;font-weight:800;color:#f9a8d4}.fxt.locked{opacity:.6}",
+".fxnote{font-size:11.5px;color:var(--mute);margin-top:8px;line-height:1.45}",
+".m[class*=' fx-'] .b{cursor:pointer}",
+".m.fx-rainbow .b{background:linear-gradient(90deg,#f87171,#fb923c,#facc15,#4ade80,#22d3ee,#a78bfa,#f472b6,#f87171);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:flow3 4s linear infinite;font-weight:700}",
+".m.fx-shout .b{font-size:24px;font-weight:900;letter-spacing:.02em;text-transform:uppercase;line-height:1.2}",
+".m.fx-ghost .b{opacity:.75;animation:fxfloat 3s ease-in-out infinite;text-shadow:0 0 12px rgba(196,181,253,.85)}",
+".m.fx-fire .b{color:#fdba74;font-weight:700;animation:fxflick .14s steps(2) infinite alternate}",
+".m.fx-love .b{color:#f9a8d4;font-weight:700;text-shadow:0 0 12px rgba(244,114,182,.7)}",
+".m.fx-sparkle .b{background:linear-gradient(110deg,#fde68a 30%,#fff 45%,#fde68a 60%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:flow2 2.5s linear infinite;font-weight:700}",
+".m.fx-glitch .b{font-weight:700;animation:fxglitch 2.4s steps(1) infinite}",
+".m.fx-boom .b{font-weight:800}",
+"@keyframes fxfloat{50%{transform:translateY(-3px)}}",
+"@keyframes fxflick{from{text-shadow:0 0 6px #f97316,0 -2px 10px #ef4444}to{text-shadow:0 0 10px #facc15,0 -4px 16px #f97316}}",
+"@keyframes fxglitch{0%,86%,100%{text-shadow:none;transform:none}88%{text-shadow:2px 0 #ec4899,-2px 0 #22d3ee;transform:translateX(1px) skewX(4deg)}92%{text-shadow:-3px 0 #ec4899,3px 0 #22d3ee;transform:translateX(-2px)}96%{text-shadow:1px 0 #ec4899,-1px 0 #22d3ee;transform:skewX(-6deg)}}",
+".m.fxp-shake,#main.fxp-shake{animation:fxshake .6s cubic-bezier(.36,.07,.19,.97)!important}",
+"@keyframes fxshake{10%,90%{transform:translateX(-2px)}20%,80%{transform:translateX(4px)}30%,50%,70%{transform:translateX(-8px) rotate(-1deg)}40%,60%{transform:translateX(8px) rotate(1deg)}}",
+".m.fxp-boom{animation:fxboom .55s cubic-bezier(.2,.9,.3,1.4)!important}@keyframes fxboom{0%{transform:scale(.3);opacity:0;filter:blur(6px)}60%{transform:scale(1.08);opacity:1;filter:none}}",
+".m.fxp-shout{animation:fxslam .5s cubic-bezier(.2,.9,.3,1.3)!important}@keyframes fxslam{0%{transform:scale(2.2);opacity:0}70%{transform:scale(.96);opacity:1}}",
+".m.fxp-ghost{animation:fxghost 1.4s ease!important}@keyframes fxghost{0%{opacity:0;filter:blur(10px);transform:translateY(14px)}}",
+".m.fxp-glitch{animation:dglitch .9s steps(1) 2!important}",
+"#fxflash{position:fixed;inset:0;z-index:58;pointer-events:none;background:radial-gradient(circle at var(--fx,50%) var(--fy,50%),rgba(255,255,255,.85),rgba(250,204,21,.4) 30%,transparent 65%);opacity:0}",
+"#fxflash.go{animation:fxflashk .5s ease-out}@keyframes fxflashk{0%{opacity:0}15%{opacity:1}100%{opacity:0}}",
+".fxfloat{position:fixed;z-index:59;pointer-events:none;font-size:22px;animation:fxrise 2.2s ease-out forwards}",
+"@keyframes fxrise{0%{transform:translate(0,0) scale(.4);opacity:0}15%{opacity:1}100%{transform:translate(var(--dx),-180px) scale(1.2) rotate(var(--rot));opacity:0}}",
+".dropcard{display:flex;align-items:center;gap:14px;margin-top:6px;padding:12px 14px;border-radius:16px;max-width:380px;background:linear-gradient(135deg,rgba(34,211,238,.18),rgba(139,92,246,.2),rgba(244,114,182,.16));border:1px solid rgba(34,211,238,.5);box-shadow:0 0 24px rgba(34,211,238,.25)}",
+".dropcard.jackpot{border-color:#facc15;box-shadow:0 0 30px rgba(250,204,21,.45)}",
+".dgem{font-size:34px;filter:drop-shadow(0 0 10px #22d3ee)}.dropcard.live .dgem{animation:dbounce 1s ease-in-out infinite}",
+"@keyframes dbounce{50%{transform:translateY(-6px) rotate(-8deg) scale(1.08)}}",
+".dmid{flex:1;min-width:0}.damt{font-size:19px;font-weight:900;color:#fff}.dsub{font-size:12px;color:var(--mute)}",
+".dgrab{border:0;border-radius:12px;padding:10px 16px;font:inherit;font-weight:800;color:#1a1200;background:linear-gradient(135deg,#facc15,#f97316);cursor:pointer;box-shadow:0 0 16px rgba(250,204,21,.5);animation:dpulse 1.2s ease-in-out infinite;min-height:40px;white-space:nowrap}",
+".dropcard.done{opacity:.7;border-color:var(--border);box-shadow:none}.dropcard.done .dgem{filter:grayscale(.6)}"
+].join("\n");
+document.head.appendChild(css);
+
+/* ---------- helpers ---------- */
+function fxOf(text){var m=/^\[fx:([a-z]+)\]([\s\S]*)$/.exec(String(text||""));return(m&&FXMAP[m[1]])?{id:m[1],t:m[2]}:null;}
+function boostedMe(){try{var b=JSON.parse(localStorage.getItem("yapper:pboost:"+(username||""))||"null");return !!(b&&+b.until>Date.now());}catch(e){return false;}}
+function keyOf(m){return m.client_id||(m.user+"|"+m.time+"|"+String(m.text||"").slice(0,80));}
+var mainEl=document.getElementById("main");
+var flashEl=pEl("div","");flashEl.id="fxflash";document.body.appendChild(flashEl);
+function flash(x,y){flashEl.style.setProperty("--fx",x+"px");flashEl.style.setProperty("--fy",y+"px");flashEl.classList.remove("go");void flashEl.offsetWidth;flashEl.classList.add("go");}
+function floaters(x,y,icons,n){for(var i=0;i<n;i++){var s=pEl("span","fxfloat",icons[i%icons.length]);s.style.left=(x+(Math.random()-.5)*140)+"px";s.style.top=(y+(Math.random()-.5)*20)+"px";s.style.setProperty("--dx",((Math.random()-.5)*120)+"px");s.style.setProperty("--rot",((Math.random()-.5)*60)+"deg");s.style.animationDelay=(Math.random()*.5)+"s";document.body.appendChild(s);setTimeout((function(e){return function(){e.remove();};})(s),3000);}}
+function play(el,id){
+  if(reduceM||!el)return;
+  var r=el.getBoundingClientRect(),cx=r.left+Math.min(r.width/2,240),cy=r.top+r.height/2;
+  if(["shake","boom","shout","ghost","glitch"].indexOf(id)>=0){el.classList.remove("fxp-"+id);void el.offsetWidth;el.classList.add("fxp-"+id);setTimeout(function(){el.classList.remove("fxp-"+id);},1900);}
+  if(id==="shake"){mainEl.classList.remove("fxp-shake");void mainEl.offsetWidth;mainEl.classList.add("fxp-shake");setTimeout(function(){mainEl.classList.remove("fxp-shake");},700);}
+  if(id==="confetti")burst(cx,cy,120,9,.22,true);
+  if(id==="boom"){flash(cx,cy);burst(cx,cy,70,11,.12,false);}
+  if(id==="fire"){burst(cx,cy+8,45,4,-.06,false);floaters(cx,cy,["🔥"],6);}
+  if(id==="love")floaters(cx,cy,["💖","💕","💗","💘","❤️"],14);
+  if(id==="sparkle")floaters(cx,cy,["✨","⭐","🌟"],12);
+  if(id==="ghost")floaters(cx,cy,["👻"],5);
+  if(id==="rainbow")burst(cx,cy,50,6,.08,false);
+}
+
+/* ---------- effect picker ---------- */
+var FX={sel:""};
+var barEl=document.getElementById("bar"),gifEl=document.getElementById("gifbtn")||document.getElementById("emo");
+var fxBtn=pEl("button","cbtn","✨");fxBtn.id="fxbtn";fxBtn.type="button";fxBtn.title="Message effects";
+barEl.insertBefore(fxBtn,gifEl);
+var chip=pEl("div","");chip.id="fxchip";barEl.appendChild(chip);
+var fp=pEl("div","");fp.id="fxpick";document.body.appendChild(fp);
+function setSel(id){
+  FX.sel=id||"";fxBtn.classList.toggle("on",!!FX.sel);chip.innerHTML="";chip.classList.toggle("on",!!FX.sel);
+  if(FX.sel){var f=FXMAP[FX.sel];chip.appendChild(pEl("span","",f.ic+" "+f.n+" effect"));var x=pEl("button","","✕");x.type="button";x.title="Remove effect";x.onclick=function(){setSel("");inp.focus();};chip.appendChild(x);}
+}
+function fillPicker(){
+  fp.innerHTML="";fp.appendChild(pEl("div","fxh","SEND WITH AN EFFECT"));
+  var g=pEl("div","fxgrid"),boosted=boostedMe();
+  FX_LIST.forEach(function(f){
+    var lock=f.boost&&!boosted,t=pEl("button","fxt"+(FX.sel===f.id?" on":"")+(lock?" locked":""));t.type="button";
+    t.appendChild(pEl("span","fi",f.ic));t.appendChild(pEl("span","",f.n));if(f.boost)t.appendChild(pEl("span","lk","💎 BOOST"));
+    t.onclick=function(){
+      if(lock){toast("💎 "+f.n+" is a Yapper Boost effect. Boost yourself in Settings → Yapper Boosts.",[["Open","",function(){closeFx();showSettings();}]]);return;}
+      setSel(FX.sel===f.id?"":f.id);closeFx();inp.focus();
+    };
+    g.appendChild(t);
+  });
+  fp.appendChild(g);
+  fp.appendChild(pEl("div","fxnote","Pick one, then send your message. Shortcut: type /confetti hello. Tap any effect message to replay it."));
+}
+function openFx(){
+  if(!username){openModal();return;}
+  if(inp.disabled){toast("You can’t send messages here.");return;}
+  fillPicker();fp.classList.add("on");
+  var r=fxBtn.getBoundingClientRect(),w=fp.offsetWidth,h=fp.offsetHeight;
+  fp.style.left=Math.max(8,Math.min(r.right-w,innerWidth-w-8))+"px";
+  var top=r.top-h-8;if(top<8)top=Math.max(8,Math.min(r.bottom+8,innerHeight-h-8));fp.style.top=top+"px";
+}
+function closeFx(){fp.classList.remove("on");}
+fxBtn.onclick=function(){if(fp.classList.contains("on"))closeFx();else openFx();};
+document.addEventListener("pointerdown",function(e){if(fp.classList.contains("on")&&!fp.contains(e.target)&&e.target!==fxBtn)closeFx();});
+document.addEventListener("keydown",function(e){if(e.key==="Escape")closeFx();});
+
+/* ---------- diamond drops ---------- */
+var DROPS={},lastDropTry=0,dropSub=null;
+function findRoom(room){for(var i=0;i<servers.length;i++){var ks=Object.keys(servers[i].channels);for(var j=0;j<ks.length;j++)if(cloudRoom(i,ks[j])===room)return{si:i,ch:ks[j]};}return null;}
+function pickAmount(){var x=Math.random();return x<.05?100:x<.25?50:x<.6?25:10;}
+function goTo(loc){dmMode=false;curS=loc.si;cur=loc.ch;renderNav();render();renderMembers();}
+function addDrop(row){
+  if(!row||!row.id||DROPS[row.id])return;
+  var at=row.created_at?new Date(row.created_at).getTime():Date.now();if(Date.now()-at>DROP_TTL)return;
+  var loc=findRoom(row.room);if(!loc)return;
+  var d=DROPS[row.id]={id:row.id,amount:Math.max(5,Math.min(100,+row.amount||10)),at:at,claimedBy:row.claimed_by||"",room:row.room,local:!!row.local};
+  servers[loc.si].channels[loc.ch].push({user:"YapperBot",text:"💎 Diamond drop!",bot:true,time:now(),drop:d.id});
+  if(!dmMode&&curS===loc.si&&cur===loc.ch)render();
+  else if(!d.claimedBy)toast("💎 A diamond drop just landed in #"+loc.ch+" ("+servers[loc.si].name+")!",[["Go","",function(){goTo(loc);}]]);
+}
+function dropChanged(row){var d=row&&DROPS[row.id];if(!d||!row.claimed_by||d.claimedBy)return;d.claimedBy=row.claimed_by;var loc=findRoom(d.room);if(loc&&!dmMode&&curS===loc.si&&cur===loc.ch)render();}
+function spawnDrop(si,ch,amount){
+  var room=cloudRoom(si,ch),id=cloudId();amount=amount||pickAmount();
+  if(!Cloud.client){addDrop({id:id,room:room,amount:amount,created_at:new Date().toISOString(),local:true});return;}
+  Cloud.client.from("yapper_drops").insert({id:id,room:room,amount:amount}).select().then(function(r){
+    if(r.error){console.warn("Drop not created:",r.error.message);return;}
+    addDrop(r.data&&r.data[0]);
+  });
+}
+function claimDrop(d){
+  if(!username){openModal();return;}
+  if(d.claimedBy||Date.now()-d.at>DROP_TTL||d.busy)return;
+  d.busy=true;
+  var win=function(){d.busy=false;d.claimedBy=username;GEM.bal+=d.amount;saveGems();fxConfetti();toast("💎 You grabbed "+d.amount+" diamonds!");render();};
+  if(d.local||!Cloud.client){win();return;}
+  Cloud.client.auth.getUser().then(function(r){
+    var uid=r&&r.data&&r.data.user&&r.data.user.id;if(!uid)throw new Error("Not signed in.");
+    return Cloud.client.from("yapper_drops").update({claimed_by:username,claimed_uid:uid,claimed_at:new Date().toISOString()}).eq("id",d.id).is("claimed_uid",null).select("id");
+  }).then(function(r){
+    if(r.error)throw r.error;
+    if(r.data&&r.data.length)win();else{d.busy=false;toast("😩 Too slow! Someone else grabbed it.");}
+  }).catch(function(e){d.busy=false;console.warn("Drop claim failed",e);toast("Couldn’t grab the drop. Make sure yapper-v2.7-setup.sql has been run.");});
+}
+function dropState(d){return d.claimedBy?"claimed":(Date.now()-d.at>DROP_TTL?"gone":"live");}
+function fillDropCard(card,d){
+  var st=dropState(d);card.className="dropcard "+(st==="live"?"live":"done")+(d.amount>=100?" jackpot":"");card.innerHTML="";card.setAttribute("data-st",st);
+  card.appendChild(pEl("span","dgem",st==="gone"?"💨":"💎"));
+  var mid=pEl("div","dmid");
+  mid.appendChild(pEl("div","damt",(d.amount>=100?"JACKPOT · ":"")+"💎 "+d.amount+" diamonds"));
+  var left=Math.max(0,Math.ceil((DROP_TTL-(Date.now()-d.at))/1000));
+  mid.appendChild(pEl("div","dsub",st==="claimed"?(d.claimedBy===username?"🎉 You grabbed it!":"Grabbed by "+d.claimedBy):st==="gone"?"Nobody grabbed it in time.":"First to grab it wins · "+left+"s"));
+  card.appendChild(mid);
+  if(st==="live"){var b=pEl("button","dgrab","Grab it!");b.type="button";b.onclick=function(e){e.stopPropagation();claimDrop(d);};card.appendChild(b);}
+}
+function subDrops(){
+  if(!Cloud.client||dropSub===Cloud.client)return;
+  var cl=dropSub=Cloud.client;
+  try{cl.channel("yapper-drops-feed").on("postgres_changes",{event:"*",schema:"public",table:"yapper_drops"},function(p){
+    if(p.eventType==="INSERT")addDrop(p.new);else if(p.eventType==="UPDATE")dropChanged(p.new);
+  }).subscribe();}catch(e){console.warn("Drop feed failed",e);}
+  cl.from("yapper_drops").select("*").gt("created_at",new Date(Date.now()-DROP_TTL).toISOString()).then(function(r){if(!r.error)(r.data||[]).forEach(addDrop);});
+}
+setInterval(subDrops,3000);
+setInterval(function(){
+  Array.prototype.forEach.call(document.querySelectorAll(".dropcard[data-id]"),function(c){
+    var d=DROPS[c.getAttribute("data-id")];if(!d)return;var st=dropState(d);
+    if(st!==c.getAttribute("data-st")){fillDropCard(c,d);return;}
+    if(st==="live"){var s=c.querySelector(".dsub");if(s)s.textContent="First to grab it wins · "+Math.max(0,Math.ceil((DROP_TTL-(Date.now()-d.at))/1000))+"s";}
+  });
+},1000);
+
+/* ---------- hook into the app ---------- */
+var played={},visited={};
+var _render=render;
+render=function(){
+  _render();
+  if(!dmMode&&isVoiceCh(servers[curS],cur))return;
+  var arr=chans()[cur]||[],els=msgs.children,rk=(dmMode?"dm/":"s/"+servers[curS].name+"/")+cur,first=!visited[rk],fresh=[];
+  visited[rk]=1;
+  for(var i=0;i<els.length&&i<arr.length;i++)(function(el,m){
+    if(m.drop&&DROPS[m.drop]){var b0=el.querySelector(".b");if(b0){b0.className="b";b0.innerHTML="";var card=pEl("div","dropcard");card.setAttribute("data-id",m.drop);fillDropCard(card,DROPS[m.drop]);b0.appendChild(card);}return;}
+    var f=fxOf(m.text);if(!f)return;
+    el.classList.add("fx-"+f.id);
+    var b=el.querySelector(".b");
+    if(b){b.innerHTML=b.innerHTML.replace("[fx:"+f.id+"]","");b.title="Tap to replay "+FXMAP[f.id].ic;b.onclick=function(){play(el,f.id);};}
+    var k=keyOf(m);if(!played[k]){played[k]=1;fresh.push([el,f.id]);}
+  })(els[i],arr[i]);
+  if(!first&&fresh.length&&fresh.length<=3)fresh.forEach(function(x){setTimeout(function(){play(x[0],x[1]);},80);});
+};
+var _send=send;
+send=function(){
+  var v=inp.value.trim(),m=new RegExp("^\\/("+FX_NAMES+")(?:\\s+([\\s\\S]+))?$","i").exec(v),sent=v&&v[0]!=="/";
+  if(m){
+    var id=m[1].toLowerCase(),f=FXMAP[id];
+    if(f.boost&&!boostedMe()){inp.value="";toast("💎 "+f.n+" is a Yapper Boost effect.",[["Open","",function(){showSettings();}]]);return;}
+    inp.value="[fx:"+id+"]"+(m[2]||(f.ic+f.ic+f.ic));sent=true;
+  }else if(FX.sel&&v&&v[0]!=="/"&&!/^\[(img|gif|fx:)/.test(v)){
+    if(FXMAP[FX.sel].boost&&!boostedMe()){setSel("");}else inp.value="[fx:"+FX.sel+"]"+v;
+    setSel("");
+  }
+  _send();
+  if(sent&&username&&!dmMode&&!isVoiceCh(servers[curS],cur)&&canSend(cur)&&Date.now()-lastDropTry>DROP_GAP&&Math.random()<DROP_CHANCE){
+    lastDropTry=Date.now();var si=curS,ch=cur;setTimeout(function(){spawnDrop(si,ch);},1500+Math.random()*4000);
+  }
+};
+var _command=command;
+command=function(ch,line){
+  var parts=line.slice(1).split(" "),c=parts[0].toLowerCase();
+  if(c==="effects"){bot(ch,"✨ Message effects:\n"+FX_LIST.map(function(f){return f.ic+" /"+f.id+" <message>"+(f.boost?"  (💎 Boost)":"");}).join("\n")+"\nOr tap ✨ next to the message box.");return;}
+  if(c==="drop"){
+    if(dmMode||!isMgr(servers[curS])||preview){bot(ch,"💎 Only moderators can start a diamond drop. They also appear randomly while people chat!");return;}
+    var a=parseInt(parts[1],10);spawnDrop(curS,ch,(a>=5&&a<=100)?a:0);return;
+  }
+  return _command(ch,line);
+};
+var _renderDM=renderDM;
+renderDM=function(){var r=_renderDM();Array.prototype.forEach.call(document.querySelectorAll("#chlist .dms"),function(s){var f=fxOf(s.textContent);if(f)s.textContent=FXMAP[f.id].ic+" "+f.t;});return r;};
+
+/* ---------- release notes ---------- */
+APP_VER="2.7";
+CHANGELOG.unshift({v:"2.7",t:"Effects & diamond drops",d:"Oct 27, 2026",items:[
+  ["new","Message effects: tap ✨ or type /confetti, /boom, /shake, /rainbow, /shout, /ghost or /sparkle before your message"],
+  ["new","Boosters get extra effects: 🔥 Fire, 💖 Love and 👾 Glitch"],
+  ["new","Diamond drops: YapperBot randomly drops 💎 while people chat, and the first person to grab it wins"],
+  ["new","Moderators can start a drop with /drop or /drop 50"]]});
+
+/* ---------- start ---------- */
+render();subDrops();
+})();
+/* =================== end of YAPPER v2.7 ADD-ON =================== */
 })();
 </script>
 
@@ -2961,3 +3669,4 @@ html, body, #app, #main {
   }
 }
 </style>
+<script async id="netlify-rum-container" src="/.netlify/scripts/rum" data-netlify-rum-site-id="a5c8f649-42e6-4f04-9f74-14bb956c02ec" data-netlify-deploy-branch="" data-netlify-deploy-context="production" data-netlify-cwv-token="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzaXRlX2lkIjoiYTVjOGY2NDktNDJlNi00ZjA0LTlmNzQtMTRiYjk1NmMwMmVjIiwiYWNjb3VudF9pZCI6IjZhZGU0YzI0NjdjMGE1YjUxNzZlMTQwMCIsImRlcGxveV9pZCI6IjZhZGZmOWYzM2FmODE2NjA2NDkxYzIwOCIsImlzcyI6Im5ldGxpZnkifQ.bAyYKg4c9uC8gfbwEGRF_qKLRjqhEJ2FXaqTqg_fEKw"></script>
